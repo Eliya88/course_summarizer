@@ -13,9 +13,11 @@ For each **unit** (one lecture, or a group of lectures on one subject) it:
 2. Sends along a lightweight text digest of *every* lecture/exercise in the
    course (extracted locally, cheaply) so Gemini has full-course context for
    cross-referencing, without re-uploading everything as images each time.
-3. Asks for a table of contents of the unit first, then asks for one
-   detailed, fully-bolded explanation **per section**, then a closing
-   glossary - all inside one continuous chat session per unit. This is the
+3. Cuts each PDF into page ranges (`PARTS_PER_FILE` in `src/pipeline.py`,
+   currently 2) and, for each range, asks for a table of contents first,
+   then one detailed, fully-bolded explanation **per section**, then a
+   closing glossary - inside one chat session per range. Topic numbers keep
+   counting across ranges, and the glossaries are merged. This is the
    fix for the "one summary is too short / misses material" problem: each
    section gets its own dedicated response instead of being squeezed into a
    single reply.
@@ -117,18 +119,24 @@ Flags:
 
 ## Cost
 
-`gemini-3-flash-preview` is ~$0.50 / 1M input tokens and ~$3.00 / 1M output
-tokens. The dominant cost driver is NOT the PDF pages (258 tokens/page) -
+The default model is `gemini-3.5-flash-lite` (~$0.30 / 1M input tokens and
+~$2.50 / 1M output tokens); set `model:` in the course YAML to use another.
+The model is part of the cache key, so switching models regenerates every
+unit. The dominant cost driver is NOT the PDF pages (258 tokens/page) -
 it's the full-course text digest (50-60K tokens for a typical course),
 which gets resent as conversation history on *every* API call within a
-unit's multi-turn chat, not just once. Based on real measured output from
-four tested NLP lectures, a full ~700-page course with ~150 API calls
-costs roughly **$5-6**; a smaller ~220-page course costs roughly **$2**.
+unit's multi-turn chat, not just once. On the older `gemini-3-flash-preview`
+($0.50 / $3.00) with one chat per unit, a full ~700-page course with ~150
+API calls measured roughly **$5-6**, and a smaller ~220-page course roughly
+**$2**. Flash-Lite is cheaper per token, but splitting each PDF in two adds
+about three calls per file (agenda, outline, and glossary for the extra
+part), so expect a similar total. This hasn't been measured yet.
 Rerunning with the cache warm (no source changes) costs nothing.
 
-To cut cost, raise `SECTION_BATCH_SIZE` in `src/pipeline.py` (currently 3
-topics/call) - fewer, larger calls means fewer times the digest gets
-resent, which is where most of the cost comes from. A single lecture with
+To cut cost, raise `SECTION_BATCH_SIZE` in `src/pipeline.py` (currently 4
+topics/call) or set `PARTS_PER_FILE` back to 1 - fewer, larger calls means
+fewer times the digest gets resent, which is where most of the cost comes
+from. A single lecture with
 ~20 topics can mean ~9 sequential API calls and take 10-15 minutes
 wall-clock - that's expected, not a hang.
 

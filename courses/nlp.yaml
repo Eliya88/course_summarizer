@@ -4,7 +4,7 @@ course_name: "NLP"
 lectures_dir: "../../NLP/Lectures"
 exercises_dir: "../../NLP/Exercises"
 output_dir: "../output/NLP"
-model: "gemini-3-flash-preview"
+model: "gemini-3.5-flash-lite"
 
 # One unit per lecture by default (each lecture PDF here is large - tens of
 # MB / likely 60-100+ slides - so keeping them separate keeps each run

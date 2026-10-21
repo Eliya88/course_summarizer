@@ -1,6 +1,7 @@
-"""Orchestrates the whole run: for each configured unit, upload its native
-PDF(s), walk it through a multi-turn chat (agenda -> one detailed pass per
-section -> glossary), and assemble one master Markdown document.
+"""Orchestrates the whole run: for each configured unit, cut its native
+PDF(s) into page ranges, upload each range and walk it through its own
+multi-turn chat (agenda -> one detailed pass per section -> glossary), and
+assemble one master Markdown document.
 
 The section-by-section loop is the fix for the original problem: asking
 Gemini for one giant summary in a single turn makes it compress/skip
@@ -16,7 +17,7 @@ import re
 from pathlib import Path
 from typing import List, Optional
 
-from . import gemini_client, prompts
+from . import gemini_client, pdf_utils, prompts
 from .config import CourseConfig, Unit
 from .course_context import build_course_context
 
@@ -25,6 +26,13 @@ from .course_context import build_course_context
 # at the cost of a larger per-call output budget.
 SECTION_BATCH_SIZE = 4
 SECTION_MAX_OUTPUT_TOKENS = 24000
+
+# Each source PDF is cut into this many page ranges, and each range gets its
+# own chat, so every call covers less material and a small model like
+# Flash-Lite skims less.
+# ponytail: plain page-count split - a topic that straddles the cut can be
+# covered in both parts; split on the deck's section-title slides if that shows.
+PARTS_PER_FILE = 2
 
 
 def _parse_agenda(agenda_text: str) -> List[str]:
@@ -102,6 +110,60 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
     return block or None
 
 
+def _group_parts(per_file: List[List[Path]]) -> List[List[Path]]:
+    """[[a1, a2], [b1]] -> [[a1, b1], [a2]]: part k holds each file's k-th chunk."""
+    n_parts = max((len(chunks) for chunks in per_file), default=0)
+    return [[chunks[k] for chunks in per_file if k < len(chunks)] for k in range(n_parts)]
+
+
+def _merge_glossaries(glossaries: List[str]) -> str:
+    """Joins the per-part glossaries, keeping only the first entry for a term
+    that shows up in more than one part."""
+    seen, lines = set(), []
+    for line in "\n".join(glossaries).splitlines():
+        match = re.match(r"\s*[-*]\s*\*\*(.+?)\*\*", line)
+        term = match.group(1).strip().lower() if match else None
+        if term in seen:
+            continue
+        if term:
+            seen.add(term)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _summarize_part(client, course: CourseConfig, system_instruction: str, digest: str, label: str,
+                    uploaded_files: List, first_index: int):
+    """One chat over one part of a unit: agenda -> outline -> sections ->
+    glossary. Topic numbers start at `first_index` so they keep counting
+    across parts. Returns (topic titles, section bodies, glossary)."""
+    chat = gemini_client.start_chat(
+        client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
+    )
+
+    agenda_prompt = prompts.AGENDA_PROMPT.format(digest=digest, unit_name=label)
+    section_titles = _parse_agenda(gemini_client.send(chat, [agenda_prompt, *uploaded_files]))
+    print(f"  Agenda: {len(section_titles)} section(s)")
+
+    print("  Planning content boundaries...")
+    gemini_client.send(chat, [prompts.OUTLINE_PROMPT])
+
+    numbered_titles = list(enumerate(section_titles, start=first_index))
+    last_index = numbered_titles[-1][0]
+    section_bodies = []
+    for batch_start in range(0, len(numbered_titles), SECTION_BATCH_SIZE):
+        batch = numbered_titles[batch_start:batch_start + SECTION_BATCH_SIZE]
+        first_i, last_i = batch[0][0], batch[-1][0]
+        print(f"  Writing topics {first_i}-{last_i}/{last_index}: "
+              f"{', '.join(t for _, t in batch)}")
+        topic_list = "\n".join(f"- Topic {i}: {t}" for i, t in batch)
+        body = gemini_client.send(chat, [prompts.SECTION_PROMPT.format(n=len(batch), topic_list=topic_list)])
+        section_bodies.append(body)
+
+    print("  Writing glossary...")
+    glossary_text = gemini_client.send(chat, [prompts.GLOSSARY_PROMPT])
+    return section_titles, section_bodies, glossary_text
+
+
 def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cache: bool = True) -> str:
     """Returns the assembled Markdown for one unit (agenda + sections + glossary)."""
     cache_path = _unit_cache_path(course, unit)
@@ -117,43 +179,30 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     if not source_paths:
         raise FileNotFoundError(f"No source PDFs found for unit '{unit.name}'")
 
-    uploaded_files = []
-    for p in source_paths:
-        print(f"  Uploading {p.name} to Gemini...")
-        uploaded_files.append(gemini_client.upload_pdf(client, p))
+    chunk_dir = course.output_dir / "cache" / "chunks"
+    per_file = [pdf_utils.split_pdf(p, PARTS_PER_FILE, chunk_dir) for p in source_paths]
+    # Part k = the k-th page range of every source file.
+    parts = _group_parts(per_file)
 
     system_instruction = prompts.SYSTEM_INSTRUCTION.format(course_name=course.course_name)
-    chat = gemini_client.start_chat(
-        client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
-    )
+    all_titles, section_bodies, glossaries = [], [], []
+    for k, part in enumerate(parts, start=1):
+        label = unit.name if len(parts) == 1 else f"{unit.name} (part {k}/{len(parts)})"
+        print(f"  Part {k}/{len(parts)}: uploading {', '.join(p.name for p in part)} to Gemini...")
+        uploaded_files = [gemini_client.upload_pdf(client, p) for p in part]
+        titles, bodies, glossary = _summarize_part(
+            client, course, system_instruction, digest, label, uploaded_files, first_index=len(all_titles) + 1
+        )
+        all_titles += titles
+        section_bodies += bodies
+        glossaries.append(glossary)
 
-    agenda_prompt = prompts.AGENDA_PROMPT.format(digest=digest, unit_name=unit.name)
-    agenda_text = gemini_client.send(chat, [agenda_prompt, *uploaded_files])
-    section_titles = _parse_agenda(agenda_text)
-    print(f"  Agenda: {len(section_titles)} section(s)")
-
-    print("  Planning content boundaries...")
-    gemini_client.send(chat, [prompts.OUTLINE_PROMPT])
-
-    numbered_titles = list(enumerate(section_titles, start=1))
-    section_bodies = []
-    for batch_start in range(0, len(numbered_titles), SECTION_BATCH_SIZE):
-        batch = numbered_titles[batch_start:batch_start + SECTION_BATCH_SIZE]
-        first_i, last_i = batch[0][0], batch[-1][0]
-        print(f"  Writing topics {first_i}-{last_i}/{len(numbered_titles)}: "
-              f"{', '.join(t for _, t in batch)}")
-        topic_list = "\n".join(f"- Topic {i}: {t}" for i, t in batch)
-        body = gemini_client.send(chat, [prompts.SECTION_PROMPT.format(n=len(batch), topic_list=topic_list)])
-        section_bodies.append(body)
-
-    print("  Writing glossary...")
-    glossary_text = gemini_client.send(chat, [prompts.GLOSSARY_PROMPT])
-
+    agenda_text = "\n".join(f"{i}. {t}" for i, t in enumerate(all_titles, start=1))
     markdown = "\n\n".join([
         f"# {unit.name}",
         "## סדר יום\n\n" + agenda_text,
         *section_bodies,
-        "## מושגי מפתח\n\n" + glossary_text,
+        "## מושגי מפתח\n\n" + _merge_glossaries(glossaries),
     ])
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
