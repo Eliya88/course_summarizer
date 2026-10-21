@@ -4,7 +4,7 @@ and are easy to tune without touching pipeline logic."""
 # Bump this whenever SYSTEM_INSTRUCTION/AGENDA/SECTION/GLOSSARY prompts change
 # in a way that would make previously-cached results stale (e.g. language,
 # required formatting). It's folded into each unit's cache key.
-PROMPT_VERSION = "v10-latex-formulas"
+PROMPT_VERSION = "v11-split-parts"
 
 # Versions the past-exam question blocks separately from the summary prompts
 # above, so tuning EXAM_PROMPT only invalidates cached exam pages and leaves

@@ -11,6 +11,8 @@ import yaml
 
 from .prompts import PROMPT_VERSION
 
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
+
 # Folder-name spellings we'll recognize when auto-discovering a course from
 # a plain directory (case-insensitive), so no YAML is needed for the common
 # case of "one folder with a Lectures subfolder and an Exercises subfolder".
@@ -45,10 +47,11 @@ class Unit:
         return paths
 
     def cache_key(self, course: "CourseConfig") -> str:
-        """Hash of file names + mtimes, so edits/new files invalidate the cache."""
+        """Hash of model + file names + mtimes, so a model switch or edited/new files invalidate the cache."""
         h = hashlib.sha256()
         h.update(PROMPT_VERSION.encode("utf-8"))
         h.update(self.name.encode("utf-8"))
+        h.update(course.model.encode("utf-8"))
         for p in self.source_paths(course):
             h.update(p.name.encode("utf-8"))
             if p.exists():
@@ -64,7 +67,7 @@ class CourseConfig:
     exercises_dir: Path
     output_dir: Path
     units: List[Unit]
-    model: str = "gemini-3-flash-preview"
+    model: str = DEFAULT_MODEL
     # Folder of past-exam PDFs. Only used when the run asks for test
     # questions (--with-tests); None when no such folder was found.
     exams_dir: Optional[Path] = None
@@ -126,7 +129,7 @@ def load_course_config(yaml_path: Path) -> CourseConfig:
         exercises_dir=exercises_dir,
         output_dir=output_dir,
         units=units,
-        model=data.get("model", "gemini-3-flash-preview"),
+        model=data.get("model", DEFAULT_MODEL),
         exams_dir=exams_dir,
     )
 
@@ -141,7 +144,7 @@ def _find_subdir(course_dir: Path, candidate_names: set) -> Optional[Path]:
 def discover_course_config(
     course_dir: Path,
     output_root: Optional[Path] = None,
-    model: str = "gemini-3-flash-preview",
+    model: str = DEFAULT_MODEL,
 ) -> CourseConfig:
     """Build a CourseConfig straight from a course folder, no YAML needed.
 

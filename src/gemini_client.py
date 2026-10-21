@@ -11,8 +11,6 @@ from typing import List
 from google import genai
 from google.genai import types
 
-DEFAULT_MODEL = "gemini-3-flash-preview"
-
 # Hard ceiling per HTTP request. Without this, a stalled connection or a
 # server-side hang blocks forever with zero CPU/network signal - which is
 # exactly what happened during testing (a call sat "running" for 90+
