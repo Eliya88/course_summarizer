@@ -1,17 +1,17 @@
 # exam_prep_summarizer
 
 Turns a course's lecture + exercise PDFs into one exam-study PDF, using the
-Gemini API. Works for any course with a similar folder layout - not just
+Claude API (Claude Haiku 5.5). Works for any course with a similar folder layout - not just
 Data Science.
 
 ## How it works
 
 For each **unit** (one lecture, or a group of lectures on one subject) it:
 
-1. Uploads the unit's actual PDF(s) to Gemini natively (so slide layout,
+1. Sends the unit's actual PDF(s) to Claude natively (so slide layout,
    diagrams, and visuals are read directly - no lossy text conversion).
 2. Sends along a lightweight text digest of *every* lecture/exercise in the
-   course (extracted locally, cheaply) so Gemini has full-course context for
+   course (extracted locally, cheaply) so Claude has full-course context for
    cross-referencing, without re-uploading everything as images each time.
 3. Cuts each PDF into page ranges (`PARTS_PER_FILE` in `src/pipeline.py`,
    currently 2) and, for each range, asks for a table of contents first,
@@ -27,7 +27,7 @@ For each **unit** (one lecture, or a group of lectures on one subject) it:
 5. Merges every unit into one Markdown document (cover page + table of
    contents, then one section per unit, each starting on a new page) and
    renders it to a styled, right-to-left **Hebrew** PDF with a handwritten
-   look (Playpen Sans Hebrew, notebook-ruled background). Gemini is
+   look (Playpen Sans Hebrew, notebook-ruled background). Claude is
    instructed to write in Hebrew but keep technical terms/model names/
    acronyms in their original English form inline, matching normal academic
    convention (e.g. "אלגוריתם ה-BERT").
@@ -49,7 +49,9 @@ py -3.12 -m venv .venv
 pip install -r requirements.txt
 ```
 
-The Gemini API key is already in `.env` (copied from `API_KEY.txt`). If you rotate it, update `.env`.
+Put your Anthropic API key in `.env` as `ANTHROPIC_API_KEY=...` (see
+`.env.example`). Create the key and buy prepaid credits (minimum $5) at
+https://console.anthropic.com - Settings > Billing.
 
 ## Usage
 
@@ -91,7 +93,7 @@ Output PDF lands in `output/<course_name>/<course_name>_exam_prep.pdf`
 either way.
 
 Flags:
-- `--no-cache` - re-call Gemini for every unit even if cached.
+- `--no-cache` - re-call Claude for every unit even if cached.
 - `--refresh-context` - rebuild the full-course text digest (only needed if
   you added/edited a source PDF and want the cross-reference context to
   reflect it immediately; it also auto-rebuilds when file mtimes change).
@@ -119,19 +121,19 @@ Flags:
 
 ## Cost
 
-The default model is `gemini-3.5-flash-lite` (~$0.30 / 1M input tokens and
-~$2.50 / 1M output tokens); set `model:` in the course YAML to use another.
-The model is part of the cache key, so switching models regenerates every
-unit. The dominant cost driver is NOT the PDF pages (258 tokens/page) -
-it's the full-course text digest (50-60K tokens for a typical course),
-which gets resent as conversation history on *every* API call within a
-unit's multi-turn chat, not just once. On the older `gemini-3-flash-preview`
-($0.50 / $3.00) with one chat per unit, a full ~700-page course with ~150
-API calls measured roughly **$5-6**, and a smaller ~220-page course roughly
-**$2**. Flash-Lite is cheaper per token, but splitting each PDF in two adds
-about three calls per file (agenda, outline, and glossary for the extra
-part), so expect a similar total. This hasn't been measured yet.
-Rerunning with the cache warm (no source changes) costs nothing.
+The default model is `claude-haiku-5-5` ($0.10 / 1M input tokens and
+$0.50 / 1M output tokens for prompts up to 100K tokens; $0.50 / $2.50
+beyond that); set `model:` in the course YAML to use another. The model is
+part of the cache key, so switching models regenerates every unit.
+
+The dominant cost driver is the full-course text digest (50-60K tokens for
+a typical course), which is resent as conversation history on *every* API
+call within a chat. Each request turns on prompt caching, so after the first
+call of a chat the digest and PDFs are read from cache at a fraction of the
+input price. Haiku 5.5 thinks by default (billed as output tokens). No full
+run has been measured on Claude yet - check the usage page in the Anthropic
+Console after the first unit. Rerunning with the cache warm (no source
+changes) costs nothing.
 
 To cut cost, raise `SECTION_BATCH_SIZE` in `src/pipeline.py` (currently 4
 topics/call) or set `PARTS_PER_FILE` back to 1 - fewer, larger calls means

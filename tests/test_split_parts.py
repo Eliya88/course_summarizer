@@ -47,8 +47,8 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
 
     chats, uploads = [], []
-    monkeypatch.setattr(pipeline.gemini_client, "upload_pdf", lambda client, p: uploads.append(p.name) or p.name)
-    monkeypatch.setattr(pipeline.gemini_client, "start_chat", lambda *a, **kw: chats.append([]) or chats[-1])
+    monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda client, p: uploads.append(p.name) or p.name)
+    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: chats.append([]) or chats[-1])
 
     def fake_send(chat, parts):
         chat.append(parts)
@@ -58,7 +58,7 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
             return f"- **Term{len(chats)}** - x"
         return parts[0][-40:]
 
-    monkeypatch.setattr(pipeline.gemini_client, "send", fake_send)
+    monkeypatch.setattr(pipeline.claude_client, "send", fake_send)
 
     markdown = pipeline.process_unit(None, course, unit, digest="d", use_cache=False)
 

@@ -11,7 +11,7 @@ import yaml
 
 from .prompts import PROMPT_VERSION
 
-DEFAULT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_MODEL = "claude-haiku-5-5"
 
 # Folder-name spellings we'll recognize when auto-discovering a course from
 # a plain directory (case-insensitive), so no YAML is needed for the common

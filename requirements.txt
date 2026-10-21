@@ -1,4 +1,4 @@
-google-genai>=1.0.0
+anthropic>=2.0.0
 pypdf>=4.0.0
 fpdf2>=2.8.0
 uharfbuzz>=0.40.0

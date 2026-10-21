@@ -18,7 +18,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Windows consoles default to cp1252, which can't encode Hebrew section
-# titles Gemini returns - force UTF-8 so progress prints don't crash mid-run.
+# titles Claude returns - force UTF-8 so progress prints don't crash mid-run.
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
@@ -42,7 +42,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build one exam-prep PDF from a course's lectures + exercises.")
     parser.add_argument("--course-dir", type=str, help="Path to a course folder containing Lectures/Exercises subfolders - auto-discovers units, no YAML needed")
     parser.add_argument("--course", type=str, help="Path to a course YAML config, e.g. courses/data_science.yaml")
-    parser.add_argument("--no-cache", action="store_true", help="Re-call Gemini for every unit even if a cached result exists")
+    parser.add_argument("--no-cache", action="store_true", help="Re-call Claude for every unit even if a cached result exists")
     parser.add_argument("--refresh-context", action="store_true", help="Rebuild the full-course text digest even if unchanged")
     parser.add_argument("--no-exercises", action="store_true", help="Exclude exercise/tutorial units from the summary (included by default)")
     parser.add_argument("--with-tests", action="store_true", help="After each chapter, add a practice page with a question from the course's past exams and a worked solution (needs an exams folder in the course directory)")
