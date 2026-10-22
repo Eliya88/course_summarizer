@@ -58,3 +58,18 @@ def test_empty_heading_is_skipped(monkeypatch):
     monkeypatch.setattr(pdf_builder, "_write_paragraph", lambda pdf, text: headings.append("para:" + text))
     pdf_builder._render_section(None, "### \n###\n### 2. Real")
     assert headings == ["2. Real"]
+
+
+def test_unsupported_latex_is_rewritten_for_mathtext():
+    import matplotlib
+    from matplotlib.mathtext import MathTextParser
+    matplotlib.use("Agg")
+    parser = MathTextParser("path")
+    for body in [
+        r"P(x_t \mid x_1, \ldots, x_{t-1}) = \operatorname{softmax}\big(f_\theta(x_1, \ldots, x_{t-1})\big)",
+        r"t_1 =^{\varepsilon} t_2 \iff |t_2 - t_1| \leq \varepsilon",
+        r"f(x) \xrightarrow{\text{Fourier Transform}} F(\omega)",
+        r"\Bigl( a \Bigr) \implies b",
+    ]:
+        parser.parse(f"${pdf_builder._to_mathtext(body)}$")  # raises if still unsupported
+    assert pdf_builder._to_mathtext(r"\bigcup_i A_i") == r"\bigcup_i A_i"  # real commands untouched

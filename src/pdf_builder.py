@@ -219,6 +219,23 @@ def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
 _MATH_FONT_SIZE = 15  # pt - the visual scale rendered formulas come out at
 _MATH_DPI = 300        # raster quality only; physical size is derived from this
 
+# Common LaTeX the model writes that mathtext doesn't know, rewritten to an
+# equivalent it does. \big( etc. only size a delimiter, so dropping the
+# command keeps the delimiter itself.
+# ponytail: \begin{cases} has no mathtext equivalent and still falls back to text.
+_MATHTEXT_FIXES = [
+    (re.compile(r"\\[Bb]igg?[lr]?(?![a-zA-Z])"), ""),
+    (re.compile(r"\\iff(?![a-zA-Z])"), r"\\Leftrightarrow"),
+    (re.compile(r"\\implies(?![a-zA-Z])"), r"\\Rightarrow"),
+    (re.compile(r"\\x(right|left)arrow\{((?:[^{}]|\{[^{}]*\})*)\}"), r"\\overset{\2}{\\long\1arrow}"),
+]
+
+
+def _to_mathtext(latex_body: str) -> str:
+    for pattern, repl in _MATHTEXT_FIXES:
+        latex_body = pattern.sub(repl, latex_body)
+    return latex_body
+
 
 def _render_math_image(latex_body: str) -> Optional[io.BytesIO]:
     """Renders a LaTeX math expression via matplotlib's "mathtext" parser -
@@ -232,7 +249,7 @@ def _render_math_image(latex_body: str) -> Optional[io.BytesIO]:
         color = f"#{r:02x}{g:02x}{b:02x}"
         fig = plt.figure(figsize=(0.1, 0.1))
         fig.patch.set_alpha(0.0)
-        fig.text(0.5, 0.5, f"${latex_body}$", fontsize=_MATH_FONT_SIZE, ha="center", va="center", color=color)
+        fig.text(0.5, 0.5, f"${_to_mathtext(latex_body)}$",fontsize=_MATH_FONT_SIZE, ha="center", va="center", color=color)
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=_MATH_DPI, transparent=True, bbox_inches="tight", pad_inches=0.08)
         plt.close(fig)
