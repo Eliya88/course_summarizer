@@ -4,7 +4,7 @@ and are easy to tune without touching pipeline logic."""
 # Bump this whenever SYSTEM_INSTRUCTION/AGENDA/SECTION/GLOSSARY prompts change
 # in a way that would make previously-cached results stale (e.g. language,
 # required formatting). It's folded into each unit's cache key.
-PROMPT_VERSION = "v11-split-parts"
+PROMPT_VERSION = "v12-images-quality"
 
 # Versions the past-exam question blocks separately from the summary prompts
 # above, so tuning EXAM_PROMPT only invalidates cached exam pages and leaves
@@ -28,12 +28,14 @@ or lecture notes, not a description of a lecture. NEVER write meta-commentary ph
 slides/course/presentation/lecture itself, such as "כפי שהוצג בשקופיות", "כפי שנלמד בקורס", "כפי שהודגם", \
 "להלן פירוט של...", "בשקופיות X-Y", "המצגת מציגה", or any similar framing. Do not mention slide numbers, \
 "exhibits", or that content came from a presentation. Just state the substantive content directly, as if \
-it were your own explanation, with no introductory throat-clearing sentence.
+it were your own explanation, with no introductory throat-clearing sentence. The only two exceptions are \
+the "@@IMG@@" figure marker and the "(בשקופית: ...)" correction note described below.
 - Bold ONLY these three patterns, nothing else:
   (a) A definition pattern: "**Term**: explanation" - bold just the term (and the colon), never any word \
 in the explanation that follows, even if that word is itself a technical term.
   (b) A short headline/lead-in sentence that introduces a list right after it, ending in a colon - bold \
-the whole lead-in sentence, e.g. "**השלבים באלגוריתם הם:**".
+the whole lead-in sentence, e.g. "**השלבים באלגוריתם הם:**". Use at most one lead-in per list, and \
+never one that just repeats the topic heading above it.
   (c) EVERY bullet point, without exception, must open with a short bolded lead (a term, name, or a \
 2-5 word phrase capturing its main point) before the unbolded explanation continues - even when the \
 bullet isn't a strict "Term: definition" pair. For example "**היתרון המרכזי**: הגישה מהירה משמעותית..." \
@@ -63,7 +65,12 @@ rendered as real math; inline LaTeX would show up as broken literal text.
   Do NOT spend space describing the visual appearance of illustrative images, photos, memes, icons, or \
 decorative diagrams - if a slide is primarily illustrative rather than technical, mention its point in \
 one short sentence at most and move on. Never invent information that is not present in the provided \
-materials.
+materials. You may add a short illustrative example of your own when it genuinely clarifies a point, but \
+end it with the label "(דוגמה נוספת)" so the student knows it is not from the material.
+- When a chart or table carries numbers, keep its key numbers in your text and do not claim more than \
+they actually show (e.g. do not say "surpasses humans" if only one of several benchmarks does).
+- If the material states something you are certain is factually wrong (e.g. a wrong year), write the \
+correct fact and follow it with "(בשקופית: <what the slide said>)".
 - The full-course digest is only for context and cross-referencing (e.g. connecting to a concept from an \
 earlier lecture). The current unit's PDF is what you must cover in full.
 - Do not add a title heading yourself - the surrounding document already provides one."""
@@ -102,8 +109,14 @@ For each topic, cover every slide's substantive content in full - definitions, a
 formulas, mechanisms, and concrete examples. Follow the content-boundary plan you laid out earlier: cover \
 only the material that belongs to these topics, and do not repeat - even partially or reworded - any \
 definition, formula, or example that belongs to a different topic in your table of contents, whether \
-you've already written it or will write it in a later batch. If two topics are closely related, mention \
-the connection in one short sentence rather than re-explaining the shared material. A standalone formula \
+you've already written it or will write it in a later batch. Do not write sentences about how topics \
+relate to each other. Keep each topic tight: aim for roughly 1.5 times the length of its slide text, never \
+pad with restatements or summaries of what you just said. Where a slide holds an important technical \
+figure that the text can't replace (a diagram, chart, table, or worked-example slide - never a logo, \
+photo, meme, or decorative image), put a line reading exactly "@@IMG@@ <deck> <page>" where it belongs, \
+with nothing else on that line: <deck> is the attached PDF's position in the order they were attached \
+(1 if there is only one) and <page> is the page number inside that PDF, counting its first page as 1. \
+Use at most about one per topic, only where the picture really helps. A standalone formula \
 goes on its own line starting with "@@F@@ " followed by real LaTeX (e.g. \
 "@@F@@ P(w \\mid s) = \\frac{{P(s \\mid w)\\,P(w)}}{{P(s)}}") and nothing else on that line - it gets \
 rendered as actual typeset math. A short expression embedded mid-sentence instead stays plain typeable \
@@ -152,8 +165,10 @@ question that is not in the attached exams, and do not stretch an unrelated ques
 Do not add a title heading - the surrounding document already provides one."""
 
 GLOSSARY_PROMPT = """Now produce the closing key-concepts glossary in Hebrew for this entire unit: a \
-bullet list of every bolded key concept you introduced across all the topics above, in the order they \
-first appeared. Keep concept names themselves in their original English form, same as in the body text. \
+bullet list of the genuine technical terms and concepts this unit defines (models, algorithms, methods, \
+metrics, named phenomena), in the order they first appeared - at most about 25. Do NOT include the bolded \
+lead phrases of ordinary bullets (e.g. "היתרון המרכזי") or descriptive phrases; only terms a student would \
+look up. Keep concept names themselves in their original English form, same as in the body text. \
 Format each line exactly as:
 
 - **Term** - הגדרה קצרה וברורה בעברית, במשפט או שניים.

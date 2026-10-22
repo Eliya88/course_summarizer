@@ -131,11 +131,29 @@ def _merge_glossaries(glossaries: List[str]) -> str:
     return "\n".join(lines)
 
 
+_IMG_MARKER_RE = re.compile(r"^\s*@@IMG@@\s*(\d+)\s+(\d+)\s*$", re.M)
+
+
+def _resolve_images(body: str, part_paths: List[Path], img_dir: Path) -> str:
+    """Turns each "@@IMG@@ <deck> <page>" the model wrote into
+    "@@IMG@@ <image path>", extracting that page's figure from the chunk PDF
+    the model actually saw. Markers with no usable image are dropped."""
+    def resolve(m: re.Match) -> str:
+        deck, page = int(m.group(1)), int(m.group(2))
+        if not 1 <= deck <= len(part_paths):
+            return ""
+        img = pdf_utils.extract_main_image(part_paths[deck - 1], page, img_dir)
+        return f"@@IMG@@ {img.resolve()}" if img else ""
+    return _IMG_MARKER_RE.sub(resolve, body)
+
+
 def _summarize_part(client, course: CourseConfig, system_instruction: str, digest: str, label: str,
-                    uploaded_files: List, first_index: int):
+                    uploaded_files: List, first_index: int, part_paths: List[Path]):
     """One chat over one part of a unit: agenda -> outline -> sections ->
     glossary. Topic numbers start at `first_index` so they keep counting
-    across parts. Returns (topic titles, section bodies, glossary)."""
+    across parts. `part_paths` are the local chunk PDFs behind
+    `uploaded_files`, used to pull out the slide images the model points at.
+    Returns (topic titles, section bodies, glossary)."""
     chat = claude_client.start_chat(
         client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
     )
@@ -157,7 +175,7 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
               f"{', '.join(t for _, t in batch)}")
         topic_list = "\n".join(f"- Topic {i}: {t}" for i, t in batch)
         body = claude_client.send(chat, [prompts.SECTION_PROMPT.format(n=len(batch), topic_list=topic_list)])
-        section_bodies.append(body)
+        section_bodies.append(_resolve_images(body, part_paths, course.output_dir / "cache" / "images"))
 
     print("  Writing glossary...")
     glossary_text = claude_client.send(chat, [prompts.GLOSSARY_PROMPT])
@@ -191,7 +209,8 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
         print(f"  Part {k}/{len(parts)}: uploading {', '.join(p.name for p in part)} to Claude...")
         uploaded_files = [claude_client.upload_pdf(client, p) for p in part]
         titles, bodies, glossary = _summarize_part(
-            client, course, system_instruction, digest, label, uploaded_files, first_index=len(all_titles) + 1
+            client, course, system_instruction, digest, label, uploaded_files,
+            first_index=len(all_titles) + 1, part_paths=part,
         )
         all_titles += titles
         section_bodies += bodies

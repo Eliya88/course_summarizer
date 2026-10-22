@@ -219,6 +219,23 @@ def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
 _MATH_FONT_SIZE = 15  # pt - the visual scale rendered formulas come out at
 _MATH_DPI = 300        # raster quality only; physical size is derived from this
 
+# Common LaTeX the model writes that mathtext doesn't know, rewritten to an
+# equivalent it does. \big( etc. only size a delimiter, so dropping the
+# command keeps the delimiter itself.
+# ponytail: \begin{cases} has no mathtext equivalent and still falls back to text.
+_MATHTEXT_FIXES = [
+    (re.compile(r"\\[Bb]igg?[lr]?(?![a-zA-Z])"), ""),
+    (re.compile(r"\\iff(?![a-zA-Z])"), r"\\Leftrightarrow"),
+    (re.compile(r"\\implies(?![a-zA-Z])"), r"\\Rightarrow"),
+    (re.compile(r"\\x(right|left)arrow\{((?:[^{}]|\{[^{}]*\})*)\}"), r"\\overset{\2}{\\long\1arrow}"),
+]
+
+
+def _to_mathtext(latex_body: str) -> str:
+    for pattern, repl in _MATHTEXT_FIXES:
+        latex_body = pattern.sub(repl, latex_body)
+    return latex_body
+
 
 def _render_math_image(latex_body: str) -> Optional[io.BytesIO]:
     """Renders a LaTeX math expression via matplotlib's "mathtext" parser -
@@ -232,7 +249,7 @@ def _render_math_image(latex_body: str) -> Optional[io.BytesIO]:
         color = f"#{r:02x}{g:02x}{b:02x}"
         fig = plt.figure(figsize=(0.1, 0.1))
         fig.patch.set_alpha(0.0)
-        fig.text(0.5, 0.5, f"${latex_body}$", fontsize=_MATH_FONT_SIZE, ha="center", va="center", color=color)
+        fig.text(0.5, 0.5, f"${_to_mathtext(latex_body)}$",fontsize=_MATH_FONT_SIZE, ha="center", va="center", color=color)
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=_MATH_DPI, transparent=True, bbox_inches="tight", pad_inches=0.08)
         plt.close(fig)
@@ -319,6 +336,31 @@ def _write_formula(pdf: FPDF, text: str, top_gap: float = 4.0) -> None:
     pdf.page_dirty = True
 
 
+def _write_image(pdf: FPDF, path: str, top_gap: float = 4.0) -> None:
+    """Draws a slide figure centered, at most 80% of the text width and never
+    taller than a page. Skipped silently if the image file is gone (e.g. the
+    cache folder was deleted) or can't be decoded."""
+    try:
+        with Image.open(path) as img:
+            px_w, px_h = img.size
+    except Exception:
+        return
+
+    w = pdf.epw * 0.8
+    h = w * px_h / px_w
+    max_h = pdf.page_break_trigger - pdf.t_margin - top_gap
+    if h > max_h:
+        w, h = w * max_h / h, max_h
+
+    pdf.ln(top_gap)
+    if pdf.get_y() + h > pdf.page_break_trigger:
+        pdf.add_page()
+    y = pdf.get_y()
+    pdf.image(path, x=pdf.l_margin + (pdf.epw - w) / 2, y=y, w=w, h=h)
+    pdf.set_y(y + h)
+    pdf.page_dirty = True
+
+
 def _write_paragraph(pdf: FPDF, text: str, size: float = 11.5, top_gap: float = 2.0) -> None:
     pdf.set_text_color(*INK_COLOR)
     pdf.ln(top_gap)
@@ -381,8 +423,10 @@ def _write_heading(pdf: FPDF, text: str, level: int) -> None:
 
 
 _LIST_RE = re.compile(r"^\s*(?:[-*]|\d+[\.\)])\s+(.*)$")
-_HEADING_RE = re.compile(r"^(#{1,3})\s+(.*)$")
+_HEADING_RE = re.compile(r"^(#{1,3})(?:\s+(.*))?$")
 _FORMULA_RE = re.compile(r"^@@F@@\s*(.*)$")
+# Slide figure, already resolved to a local file by the pipeline: "@@IMG@@ C:\...\deck_p7.jpg".
+_IMG_RE = re.compile(r"^@@IMG@@\s*(.+)$")
 # Cover-page table-of-contents entry: "@@TOC@@ 3|Corpus Linguistics".
 _TOC_RE = re.compile(r"^@@TOC@@\s*(\d+)\|(.*)$")
 
@@ -408,9 +452,17 @@ def _render_section(pdf: FPDF, section_md: str,
             _write_formula(pdf, formula_match.group(1).strip())
             continue
 
+        img_match = _IMG_RE.match(line.strip())
+        if img_match:
+            _write_image(pdf, img_match.group(1).strip())
+            continue
+
         heading_match = _HEADING_RE.match(line)
         if heading_match:
-            _write_heading(pdf, heading_match.group(2).strip(), len(heading_match.group(1)))
+            # An empty "### " the model sometimes leaves behind would draw a blank subject page.
+            title = (heading_match.group(2) or "").strip()
+            if title:
+                _write_heading(pdf, title, len(heading_match.group(1)))
             continue
 
         list_match = _LIST_RE.match(line)

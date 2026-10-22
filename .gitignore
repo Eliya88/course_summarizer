@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 output/
 API_KEY.txt
+
+# Duplicate copies left by cloud sync (e.g. ".env (1)")
+* (1)*
