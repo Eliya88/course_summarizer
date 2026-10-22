@@ -11,7 +11,7 @@ from pypdf import PdfReader, PdfWriter
 def extract_text(pdf_path: Path) -> str:
     """Best-effort plain-text extraction, used only for the lightweight
     full-course context digest (not for the detailed slide-by-slide pass,
-    which sends the native PDF to Gemini instead)."""
+    which sends the native PDF to Claude instead)."""
     try:
         reader = PdfReader(str(pdf_path))
     except Exception as e:

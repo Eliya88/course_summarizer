@@ -1,5 +1,5 @@
 """Builds a lightweight, plain-text digest of every lecture + exercise PDF
-in the course. This is sent as text context on every Gemini call so the
+in the course. This is sent as text context on every Claude call so the
 model always has the *breadth* of the whole course, even while it's doing a
 *deep* slide-by-slide pass on one unit's native PDF(s)."""
 from __future__ import annotations

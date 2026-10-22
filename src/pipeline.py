@@ -4,7 +4,7 @@ multi-turn chat (agenda -> one detailed pass per section -> glossary), and
 assemble one master Markdown document.
 
 The section-by-section loop is the fix for the original problem: asking
-Gemini for one giant summary in a single turn makes it compress/skip
+Claude for one giant summary in a single turn makes it compress/skip
 material. Asking for one dedicated, generously-budgeted response per section
 - while keeping the whole unit in one chat session for continuity - gets
 exhaustive coverage without needing several manual chat sessions.
@@ -17,11 +17,11 @@ import re
 from pathlib import Path
 from typing import List, Optional
 
-from . import gemini_client, pdf_utils, prompts
+from . import claude_client, pdf_utils, prompts
 from .config import CourseConfig, Unit
 from .course_context import build_course_context
 
-# How many agenda topics go into one Gemini call. Batching cuts wall-clock
+# How many agenda topics go into one Claude call. Batching cuts wall-clock
 # time and API call count roughly by this factor versus one call per topic,
 # at the cost of a larger per-call output budget.
 SECTION_BATCH_SIZE = 4
@@ -89,7 +89,7 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
 
     print(f"  Looking for a past-exam question on '{unit.name}'...")
     system_instruction = prompts.SYSTEM_INSTRUCTION.format(course_name=course.course_name)
-    chat = gemini_client.start_chat(
+    chat = claude_client.start_chat(
         client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
     )
     prompt = prompts.EXAM_PROMPT.format(
@@ -97,7 +97,7 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
         unit_summary=unit_markdown,
         no_question_marker=prompts.EXAM_NO_QUESTION_MARKER,
     )
-    answer = gemini_client.send(chat, [prompt, *exam_files]).strip()
+    answer = claude_client.send(chat, [prompt, *exam_files]).strip()
 
     if prompts.EXAM_NO_QUESTION_MARKER in answer:
         print(f"  No past-exam question matches '{unit.name}' - skipping its practice page")
@@ -136,16 +136,16 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
     """One chat over one part of a unit: agenda -> outline -> sections ->
     glossary. Topic numbers start at `first_index` so they keep counting
     across parts. Returns (topic titles, section bodies, glossary)."""
-    chat = gemini_client.start_chat(
+    chat = claude_client.start_chat(
         client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
     )
 
     agenda_prompt = prompts.AGENDA_PROMPT.format(digest=digest, unit_name=label)
-    section_titles = _parse_agenda(gemini_client.send(chat, [agenda_prompt, *uploaded_files]))
+    section_titles = _parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files]))
     print(f"  Agenda: {len(section_titles)} section(s)")
 
     print("  Planning content boundaries...")
-    gemini_client.send(chat, [prompts.OUTLINE_PROMPT])
+    claude_client.send(chat, [prompts.OUTLINE_PROMPT])
 
     numbered_titles = list(enumerate(section_titles, start=first_index))
     last_index = numbered_titles[-1][0]
@@ -156,11 +156,11 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
         print(f"  Writing topics {first_i}-{last_i}/{last_index}: "
               f"{', '.join(t for _, t in batch)}")
         topic_list = "\n".join(f"- Topic {i}: {t}" for i, t in batch)
-        body = gemini_client.send(chat, [prompts.SECTION_PROMPT.format(n=len(batch), topic_list=topic_list)])
+        body = claude_client.send(chat, [prompts.SECTION_PROMPT.format(n=len(batch), topic_list=topic_list)])
         section_bodies.append(body)
 
     print("  Writing glossary...")
-    glossary_text = gemini_client.send(chat, [prompts.GLOSSARY_PROMPT])
+    glossary_text = claude_client.send(chat, [prompts.GLOSSARY_PROMPT])
     return section_titles, section_bodies, glossary_text
 
 
@@ -188,8 +188,8 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     all_titles, section_bodies, glossaries = [], [], []
     for k, part in enumerate(parts, start=1):
         label = unit.name if len(parts) == 1 else f"{unit.name} (part {k}/{len(parts)})"
-        print(f"  Part {k}/{len(parts)}: uploading {', '.join(p.name for p in part)} to Gemini...")
-        uploaded_files = [gemini_client.upload_pdf(client, p) for p in part]
+        print(f"  Part {k}/{len(parts)}: uploading {', '.join(p.name for p in part)} to Claude...")
+        uploaded_files = [claude_client.upload_pdf(client, p) for p in part]
         titles, bodies, glossary = _summarize_part(
             client, course, system_instruction, digest, label, uploaded_files, first_index=len(all_titles) + 1
         )
@@ -219,7 +219,7 @@ def run(course: CourseConfig, use_cache: bool = True, force_context: bool = Fals
 
     With `with_tests`, each unit also gets a past-exam practice question
     appended, provided the course has an exams folder to draw from."""
-    client = gemini_client.make_client()
+    client = claude_client.make_client()
     digest = build_course_context(course, force=force_context)
 
     exam_files, exam_fp = [], ""
@@ -233,7 +233,7 @@ def run(course: CourseConfig, use_cache: bool = True, force_context: bool = Fals
             print(f"[pipeline] Uploading {len(exam_paths)} past-exam PDF(s) from {course.exams_dir.name}...")
             for p in exam_paths:
                 print(f"  Uploading {p.name}...")
-                exam_files.append(gemini_client.upload_pdf(client, p))
+                exam_files.append(claude_client.upload_pdf(client, p))
 
     unit_markdowns = []
     for unit in course.units:
@@ -246,7 +246,7 @@ def run(course: CourseConfig, use_cache: bool = True, force_context: bool = Fals
                 markdown = markdown + "\n\n" + exam_block
         unit_markdowns.append(markdown)
 
-    cover = f"# {course.course_name}\n## סיכום לקראת בחינה\n\n" + "## תוכן עניינים\n\n" + "\n".join(
+    cover = f"# {course.course_name}\n## סיכום קורס\n\n" + "## תוכן עניינים\n\n" + "\n".join(
         f"@@TOC@@ {i}|{u.name}" for i, u in enumerate(course.units, start=1)
     )
 

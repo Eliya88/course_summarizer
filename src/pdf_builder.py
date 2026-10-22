@@ -370,7 +370,7 @@ def _write_heading(pdf: FPDF, text: str, level: int) -> None:
     pdf.ln(0 if is_subject_heading and not pdf.page_dirty else gaps[level])
     pdf.set_font(FONT_FAMILY, style="B", size=sizes[level])
     pdf.set_text_color(*HEADING_COLOR)
-    pdf.multi_cell(w=pdf.epw, h=sizes[level] * 0.7, text=text, align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(w=pdf.epw, h=sizes[level] * 0.7, text=text, align="C" if level == 1 else "R", new_x="LMARGIN", new_y="NEXT")
     if level <= 2:
         pdf.set_draw_color(*HEADING_COLOR)
         pdf.set_line_width(0.5)
