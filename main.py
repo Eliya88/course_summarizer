@@ -3,7 +3,7 @@
 Usage:
     python main.py --course-dir "../NLP"                  # auto-discover, no YAML needed
     python main.py --course-dir "../NLP" --no-cache
-    python main.py --course-dir "../NLP" --no-exercises   # lectures only, skip exercise/tutorial units
+    python main.py --course-dir "../NLP" --with-exercises # also summarize exercise/tutorial units
     python main.py --course-dir "../NLP" --with-tests     # add a past-exam practice page after each chapter
     python main.py --course courses/data_science.yaml     # or use a hand-written YAML config
     python main.py --course courses/data_science.yaml --refresh-context
@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -44,7 +45,7 @@ def main() -> None:
     parser.add_argument("--course", type=str, help="Path to a course YAML config, e.g. courses/data_science.yaml")
     parser.add_argument("--no-cache", action="store_true", help="Re-call Claude for every unit even if a cached result exists")
     parser.add_argument("--refresh-context", action="store_true", help="Rebuild the full-course text digest even if unchanged")
-    parser.add_argument("--no-exercises", action="store_true", help="Exclude exercise/tutorial units from the summary (included by default)")
+    parser.add_argument("--with-exercises", action="store_true", help="Also summarize exercise/tutorial units (lectures only by default)")
     parser.add_argument("--with-tests", action="store_true", help="After each chapter, add a practice page with a question from the course's past exams and a worked solution (needs an exams folder in the course directory)")
     parser.add_argument("--list-pdfs", type=str, metavar="DIR", help="List PDFs in DIR formatted for a course YAML, then exit")
     args = parser.parse_args()
@@ -63,11 +64,11 @@ def main() -> None:
     else:
         course = load_course_config(Path(args.course))
 
-    if args.no_exercises:
+    if not args.with_exercises:
         excluded = [u for u in course.units if not u.lecture_files]
         course.units = [u for u in course.units if u.lecture_files]
         for u in excluded:
-            print(f"  [--no-exercises] flag: skipping exercise unit: {u.name}")
+            print(f"  skipping exercise unit (pass --with-exercises to include): {u.name}")
 
     print(f"Course: {course.course_name}  |  model: {course.model}  |  units: {len(course.units)}")
     if args.with_tests:
@@ -90,6 +91,9 @@ def main() -> None:
         chapter_titles=[u.name for u in course.units],
     )
     print(f"\nDone. Wrote: {output_path}")
+    if args.course_dir:
+        copy_path = shutil.copy2(output_path, Path(args.course_dir))
+        print(f"Copied to: {copy_path}")
 
 
 if __name__ == "__main__":

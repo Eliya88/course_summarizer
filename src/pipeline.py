@@ -246,7 +246,7 @@ def run(course: CourseConfig, use_cache: bool = True, force_context: bool = Fals
                 markdown = markdown + "\n\n" + exam_block
         unit_markdowns.append(markdown)
 
-    cover = f"# {course.course_name}\n## סיכום לקראת בחינה\n\n" + "## תוכן עניינים\n\n" + "\n".join(
+    cover = f"# {course.course_name}\n## סיכום קורס\n\n" + "## תוכן עניינים\n\n" + "\n".join(
         f"@@TOC@@ {i}|{u.name}" for i, u in enumerate(course.units, start=1)
     )
 
