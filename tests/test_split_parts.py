@@ -68,3 +68,24 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
     assert "- Topic 3: Gamma\n- Topic 4: Delta" in chats[1][2][0]
     assert "1. Alpha\n2. Beta\n3. Gamma\n4. Delta" in markdown
     assert "- **Term1** - x\n- **Term2** - x" in markdown
+
+
+def test_book_unit_is_one_chat_of_three_calls(tmp_path, monkeypatch):
+    (tmp_path / "lec").mkdir()
+    make_pdf(tmp_path / "lec" / "ch01.pdf", 4)
+    course = SimpleNamespace(
+        course_name="C", model="m", output_dir=tmp_path / "out",
+        lectures_dir=tmp_path / "lec", exercises_dir=tmp_path / "ex", book=True, focus="",
+    )
+    monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
+    sends = []
+    monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda client, p: p.name)
+    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: None)
+    monkeypatch.setattr(pipeline.claude_client, "send",
+                        lambda chat, parts: sends.append(parts[0]) or ("1. A\n2. B\n3. C\n4. D\n5. E" if len(sends) == 1 else "x"))
+
+    pipeline.process_unit(None, course, Unit(name="Ch 1", lecture_files=["ch01.pdf"]), digest="", use_cache=False)
+
+    assert len(sends) == 3  # agenda, all topics, glossary
+    assert sends[0].endswith(pipeline.prompts.BOOK_AGENDA_RULE)
+    assert "- Topic 5: E" in sends[1] and "4-5 pages" in sends[1]

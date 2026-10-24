@@ -79,6 +79,10 @@ earlier lecture). The current unit's PDF is what you must cover in full.
 # pages are much denser than slides, so a book gets a page ratio instead.
 SLIDE_LENGTH_RULE = ("Keep each topic tight: aim for roughly 1.5 times the length of its slide text, never "
                      "pad with restatements or summaries of what you just said.")
+# Added to AGENDA_PROMPT for a book: a chapter has far more sub-topics than
+# a slide deck, and every topic adds output, so the book gets a few broad ones.
+BOOK_AGENDA_RULE = ("\n\nThis is a long textbook chapter: group its content into at most 8 broad topics, "
+                    "in the order they appear, each spanning several of the chapter's sub-sections.")
 BOOK_LENGTH_RULE = ("Keep each topic tight: write about one page of summary per 4-5 pages of the book, "
                     "never pad with restatements or summaries of what you just said.")
 

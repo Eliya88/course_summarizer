@@ -166,17 +166,23 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
     )
 
     agenda_prompt = prompts.AGENDA_PROMPT.format(digest=digest, unit_name=label)
+    if course.book:
+        agenda_prompt += prompts.BOOK_AGENDA_RULE
     section_titles = _parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files]))
     print(f"  Agenda: {len(section_titles)} section(s)")
 
-    print("  Planning content boundaries...")
-    claude_client.send(chat, [prompts.OUTLINE_PROMPT])
+    # A book's few broad topics are written in one call, so there are no
+    # batches to keep apart and the boundary-planning call is skipped.
+    batch_size = len(section_titles) if course.book else SECTION_BATCH_SIZE
+    if not course.book:
+        print("  Planning content boundaries...")
+        claude_client.send(chat, [prompts.OUTLINE_PROMPT])
 
     numbered_titles = list(enumerate(section_titles, start=first_index))
     last_index = numbered_titles[-1][0]
     section_bodies = []
-    for batch_start in range(0, len(numbered_titles), SECTION_BATCH_SIZE):
-        batch = numbered_titles[batch_start:batch_start + SECTION_BATCH_SIZE]
+    for batch_start in range(0, len(numbered_titles), batch_size):
+        batch = numbered_titles[batch_start:batch_start + batch_size]
         first_i, last_i = batch[0][0], batch[-1][0]
         print(f"  Writing topics {first_i}-{last_i}/{last_index}: "
               f"{', '.join(t for _, t in batch)}")
