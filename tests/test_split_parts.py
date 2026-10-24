@@ -41,7 +41,7 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
     make_pdf(tmp_path / "lec" / "L1.pdf", 4)
     course = SimpleNamespace(
         course_name="C", model="m", output_dir=tmp_path / "out",
-        lectures_dir=tmp_path / "lec", exercises_dir=tmp_path / "ex",
+        lectures_dir=tmp_path / "lec", exercises_dir=tmp_path / "ex", book=False, focus="",
     )
     unit = Unit(name="Unit 1", lecture_files=["L1.pdf"])
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")

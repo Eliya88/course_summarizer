@@ -88,7 +88,7 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
         return cached or None
 
     print(f"  Looking for a past-exam question on '{unit.name}'...")
-    system_instruction = prompts.SYSTEM_INSTRUCTION.format(course_name=course.course_name)
+    system_instruction = _system_instruction(course)
     chat = claude_client.start_chat(
         client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
     )
@@ -108,6 +108,13 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps({"markdown": block}, ensure_ascii=False, indent=2), encoding="utf-8")
     return block or None
+
+
+def _system_instruction(course: CourseConfig) -> str:
+    extra = prompts.BOOK_NOTE if course.book else ""
+    if course.focus:
+        extra += prompts.FOCUS_NOTE.format(focus=course.focus)
+    return prompts.SYSTEM_INSTRUCTION.format(course_name=course.course_name, extra=extra)
 
 
 def _group_parts(per_file: List[List[Path]]) -> List[List[Path]]:
@@ -174,7 +181,9 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
         print(f"  Writing topics {first_i}-{last_i}/{last_index}: "
               f"{', '.join(t for _, t in batch)}")
         topic_list = "\n".join(f"- Topic {i}: {t}" for i, t in batch)
-        body = claude_client.send(chat, [prompts.SECTION_PROMPT.format(n=len(batch), topic_list=topic_list)])
+        body = claude_client.send(chat, [prompts.SECTION_PROMPT.format(
+            n=len(batch), topic_list=topic_list,
+            length_rule=prompts.BOOK_LENGTH_RULE if course.book else prompts.SLIDE_LENGTH_RULE)])
         section_bodies.append(_resolve_images(body, part_paths, course.output_dir / "cache" / "images"))
 
     print("  Writing glossary...")
@@ -198,11 +207,11 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
         raise FileNotFoundError(f"No source PDFs found for unit '{unit.name}'")
 
     chunk_dir = course.output_dir / "cache" / "chunks"
-    per_file = [pdf_utils.split_pdf(p, PARTS_PER_FILE, chunk_dir) for p in source_paths]
+    per_file = [pdf_utils.split_pdf(p, 1 if course.book else PARTS_PER_FILE, chunk_dir) for p in source_paths]
     # Part k = the k-th page range of every source file.
     parts = _group_parts(per_file)
 
-    system_instruction = prompts.SYSTEM_INSTRUCTION.format(course_name=course.course_name)
+    system_instruction = _system_instruction(course)
     all_titles, section_bodies, glossaries = [], [], []
     for k, part in enumerate(parts, start=1):
         label = unit.name if len(parts) == 1 else f"{unit.name} (part {k}/{len(parts)})"
@@ -239,7 +248,8 @@ def run(course: CourseConfig, use_cache: bool = True, force_context: bool = Fals
     With `with_tests`, each unit also gets a past-exam practice question
     appended, provided the course has an exams folder to draw from."""
     client = claude_client.make_client()
-    digest = build_course_context(course, force=force_context)
+    # A book's chapters are too long to resend as a digest on every call.
+    digest = "" if course.book else build_course_context(course, force=force_context)
 
     exam_files, exam_fp = [], ""
     if with_tests:

@@ -73,9 +73,31 @@ they actually show (e.g. do not say "surpasses humans" if only one of several be
 correct fact and follow it with "(בשקופית: <what the slide said>)".
 - The full-course digest is only for context and cross-referencing (e.g. connecting to a concept from an \
 earlier lecture). The current unit's PDF is what you must cover in full.
-- Do not add a title heading yourself - the surrounding document already provides one."""
+- Do not add a title heading yourself - the surrounding document already provides one.{extra}"""
 
-AGENDA_PROMPT = """Here is the full-course context digest, for cross-referencing only:
+# Length rule for each section. The slide one is the regular wording; book
+# pages are much denser than slides, so a book gets a page ratio instead.
+SLIDE_LENGTH_RULE = ("Keep each topic tight: aim for roughly 1.5 times the length of its slide text, never "
+                     "pad with restatements or summaries of what you just said.")
+BOOK_LENGTH_RULE = ("Keep each topic tight: write about one page of summary per 4-5 pages of the book, "
+                    "never pad with restatements or summaries of what you just said.")
+
+# Appended to SYSTEM_INSTRUCTION through {extra} - empty for regular runs.
+BOOK_NOTE = """
+- The attached PDF is a textbook chapter, not a slide deck: wherever these instructions say "slides", \
+read "book pages". Skip the chapter's "Historical Notes", "Exercises", and bibliography sections. Use the \
+"@@IMG@@" marker only for a figure that is an embedded picture on the page."""
+
+FOCUS_NOTE = """
+- The student is studying this material for the assignment below. Explain in depth, with worked \
+examples of the same kind, every concept, formula, and algorithm the assignment relies on; cover the rest \
+of the material briefly. Never solve the assignment's own questions or reuse its specific numbers - teach \
+the material so the student can solve them alone.
+--- START OF ASSIGNMENT ---
+{focus}
+--- END OF ASSIGNMENT ---"""
+
+AGENDA_PROMPT ="""Here is the full-course context digest, for cross-referencing only:
 
 {digest}
 
@@ -110,8 +132,7 @@ formulas, mechanisms, and concrete examples. Follow the content-boundary plan yo
 only the material that belongs to these topics, and do not repeat - even partially or reworded - any \
 definition, formula, or example that belongs to a different topic in your table of contents, whether \
 you've already written it or will write it in a later batch. Do not write sentences about how topics \
-relate to each other. Keep each topic tight: aim for roughly 1.5 times the length of its slide text, never \
-pad with restatements or summaries of what you just said. Where a slide holds an important technical \
+relate to each other. {length_rule} Where a slide holds an important technical \
 figure that the text can't replace (a diagram, chart, table, or worked-example slide - never a logo, \
 photo, meme, or decorative image), put a line reading exactly "@@IMG@@ <deck> <page>" where it belongs, \
 with nothing else on that line: <deck> is the attached PDF's position in the order they were attached \

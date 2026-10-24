@@ -89,8 +89,28 @@ Then run:
 python main.py --course courses/data_science.yaml
 ```
 
+### Option C: chapters of a textbook (book mode)
+
+For a book that isn't a course folder, pick chapters by number and,
+optionally, an assignment to focus on:
+```
+python main.py --book "path/to/book.pdf" --chapters 1-5 --focus "path/to/ex1.pdf"
+```
+
+- `--chapters` takes `1-5`, `3`, or `1,3-4`. Chapters are found from the
+  PDF's bookmarks (a book with parts uses the chapters inside them), and
+  each one is cut out once into `output/<book>/cache/chapters/`.
+- The summary is shorter than a regular run (about one page per 4-5 book
+  pages), each chapter is one chat, and no full-course digest is sent.
+- `--focus` sends the assignment's text along: topics it relies on get
+  depth and worked examples, the rest stays brief, and its own questions
+  are never solved.
+
+The PDF is written to `output/<book>/<book>_ch1-5_exam_prep.pdf` and copied
+next to the book.
+
 Output PDF lands in `output/<course_name>/<course_name>_exam_prep.pdf`
-either way.
+for options A and B.
 
 Flags:
 - `--no-cache` - re-call Claude for every unit even if cached.

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from pypdf import PdfReader, PdfWriter
 
@@ -41,13 +41,41 @@ def split_pdf(pdf_path: Path, parts: int, out_dir: Path) -> List[Path]:
     chunks = []
     for start in range(0, total, size):
         end = min(start + size, total)
-        writer = PdfWriter()
-        for page in reader.pages[start:end]:
-            writer.add_page(page)
-        out = out_dir / f"{pdf_path.stem}_p{start + 1}-{end}.pdf"
-        writer.write(out)
-        chunks.append(out)
+        chunks.append(extract_pages(reader, start + 1, end, out_dir / f"{pdf_path.stem}_p{start + 1}-{end}.pdf"))
     return chunks
+
+
+def extract_pages(reader: PdfReader, first: int, last: int, out: Path) -> Path:
+    """Writes 1-based pages `first`..`last` (inclusive) of `reader` to `out`."""
+    writer = PdfWriter()
+    for page in reader.pages[first - 1:last]:
+        writer.add_page(page)
+    writer.write(out)
+    return out
+
+
+def chapter_ranges(reader: PdfReader) -> List[Tuple[str, int, int]]:
+    """(title, first page, last page), 1-based, for every chapter bookmark.
+    Chapters are the second-level bookmarks when the top level holds parts
+    ("I Large Language Models" -> "Introduction", ...), else the top level.
+    A chapter ends right before the next bookmark of either level, so it
+    never runs into the next part's title page. [] if there are no bookmarks."""
+    # ponytail: relies on the PDF's bookmarks - add a --pages fallback if a
+    # book without them shows up.
+    outline = reader.outline
+    nested = any(isinstance(o, list) for o in outline)
+    marks = []  # (is_chapter, title, start page)
+    for o in outline:
+        for child in (o if isinstance(o, list) else [o]):
+            if not isinstance(child, list):
+                is_chapter = isinstance(o, list) or not nested
+                marks.append((is_chapter, child.title, reader.get_destination_page_number(child) + 1))
+    starts = sorted({start for _, _, start in marks})
+    total = len(reader.pages)
+    return [
+        (title, start, next((s - 1 for s in starts if s > start), total))
+        for is_chapter, title, start in marks if is_chapter
+    ]
 
 
 def extract_main_image(pdf_path: Path, page: int, out_dir: Path) -> Optional[Path]:

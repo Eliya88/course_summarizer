@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import List, Optional
 
 import yaml
+from pypdf import PdfReader
 
+from . import pdf_utils
 from .prompts import PROMPT_VERSION
 
 DEFAULT_MODEL = "claude-haiku-5-5"
@@ -52,6 +54,11 @@ class Unit:
         h.update(PROMPT_VERSION.encode("utf-8"))
         h.update(self.name.encode("utf-8"))
         h.update(course.model.encode("utf-8"))
+        # Only folded in when set, so regular courses keep their old keys.
+        if course.book:
+            h.update(b"book")
+        if course.focus:
+            h.update(course.focus.encode("utf-8"))
         for p in self.source_paths(course):
             h.update(p.name.encode("utf-8"))
             if p.exists():
@@ -71,6 +78,10 @@ class CourseConfig:
     # Folder of past-exam PDFs. Only used when the run asks for test
     # questions (--with-tests); None when no such folder was found.
     exams_dir: Optional[Path] = None
+    # Book mode (--book): units are textbook chapters, not slide decks.
+    book: bool = False
+    # Text of an assignment (--focus) the summary should go deep on.
+    focus: str = ""
 
     def exam_paths(self) -> List[Path]:
         """Past-exam PDFs, natural-sorted. Same leading-underscore skip rule
@@ -200,4 +211,65 @@ def discover_course_config(
         units=units,
         model=model,
         exams_dir=exams_dir,
+    )
+
+
+def parse_chapters(spec: str) -> List[int]:
+    """'1-5,7' -> [1, 2, 3, 4, 5, 7]."""
+    chapters = []
+    for part in spec.replace(" ", "").split(","):
+        first, _, last = part.partition("-")
+        if not first.isdigit() or (last and not last.isdigit()):
+            raise ValueError(f"Bad --chapters value {spec!r}, expected e.g. 1-5 or 1,3,5")
+        chapters += range(int(first), int(last or first) + 1)
+    return sorted(set(chapters))
+
+
+def discover_book_config(
+    book_path: Path,
+    chapters: List[int],
+    focus_path: Optional[Path] = None,
+    output_root: Optional[Path] = None,
+    model: str = DEFAULT_MODEL,
+) -> CourseConfig:
+    """Build a CourseConfig whose units are the given chapters of a textbook
+    PDF, found from its bookmarks. Each chapter is cut out once into the
+    output cache and reused after that."""
+    book_path = Path(book_path).resolve()
+    if not book_path.is_file():
+        raise FileNotFoundError(f"Book not found: {book_path}")
+    reader = PdfReader(str(book_path))
+    ranges = pdf_utils.chapter_ranges(reader)
+    if not ranges:
+        raise ValueError(f"{book_path.name} has no chapter bookmarks to find chapters by")
+    unknown = [c for c in chapters if not 1 <= c <= len(ranges)]
+    if unknown:
+        raise ValueError(f"{book_path.name} has chapters 1-{len(ranges)}, no chapter {unknown}")
+
+    output_dir = Path(output_root).resolve() / book_path.stem if output_root else (
+        Path(__file__).parent.parent / "output" / book_path.stem
+    )
+    chapters_dir = output_dir / "cache" / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    units = []
+    for c in chapters:
+        title, first, last = ranges[c - 1]
+        out = chapters_dir / f"ch{c:02d}_p{first}-{last}.pdf"
+        # Written once only: the cache key uses the file's mtime.
+        if not out.exists():
+            pdf_utils.extract_pages(reader, first, last, out)
+        units.append(Unit(name=f"Chapter {c}: {title}", lecture_files=[out.name]))
+
+    spec = f"{chapters[0]}-{chapters[-1]}" if chapters == list(range(chapters[0], chapters[-1] + 1)) \
+        else ",".join(map(str, chapters))
+    return CourseConfig(
+        course_name=f"{book_path.stem} ch{spec}",
+        root_dir=book_path.parent,
+        lectures_dir=chapters_dir,
+        exercises_dir=chapters_dir,
+        output_dir=output_dir,
+        units=units,
+        model=model,
+        book=True,
+        focus=pdf_utils.extract_text(Path(focus_path)) if focus_path else "",
     )
