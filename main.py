@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
 import sys
 from pathlib import Path
@@ -23,6 +24,10 @@ from dotenv import load_dotenv
 # titles Claude returns - force UTF-8 so progress prints don't crash mid-run.
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
+# pypdf warns about every font with a duplicated /ToUnicode entry (common in
+# big textbooks); harmless, and it buries the progress output.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 sys.path.insert(0, str(Path(__file__).parent))
 

@@ -260,7 +260,7 @@ def discover_book_config(
             pdf_utils.extract_pages(reader, first, last, out)
         units.append(Unit(name=f"Chapter {c}: {title}", lecture_files=[out.name]))
 
-    spec = f"{chapters[0]}-{chapters[-1]}" if chapters == list(range(chapters[0], chapters[-1] + 1)) \
+    spec = f"{chapters[0]}-{chapters[-1]}" if len(chapters) > 1 and chapters == list(range(chapters[0], chapters[-1] + 1)) \
         else ",".join(map(str, chapters))
     return CourseConfig(
         course_name=f"{book_path.stem} ch{spec}",
