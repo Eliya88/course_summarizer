@@ -242,7 +242,7 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     agenda_text = "\n".join(f"{i}. {t}" for i, t in enumerate(all_titles, start=1))
     markdown = "\n\n".join([
         f"# {unit.name}",
-        "## סדר יום\n\n" + agenda_text,
+        "## נושאים:\n\n" + agenda_text,
         *section_bodies,
         "## מושגי מפתח\n\n" + _merge_glossaries(glossaries),
     ])

@@ -85,3 +85,8 @@ def test_long_english_quote_wraps_inside_the_margins():
     pdf_builder._write_richtext(pdf, "דוגמה: " + quote, size=11.5, prefix="• ")
     assert len(cells) > 3  # the quote was split across lines
     assert all(x >= pdf.l_margin - 0.01 and x + w <= pdf.w - pdf.r_margin + 0.01 for x, w in cells)
+
+
+def test_english_after_a_hebrew_prefix_stays_in_one_chunk():
+    words = [w for w, _ in pdf_builder._tokenize_words("Tokens ו-Language Models של **ה-BPE** מודל")]
+    assert words == ["Tokens", "ו-Language Models", "של", "ה-BPE", "מודל"]

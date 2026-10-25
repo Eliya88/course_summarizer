@@ -114,6 +114,7 @@ def _split_bold_runs(text: str):
 
 
 _HEBREW_RE = re.compile(r"[֐-׿]")
+_LATIN_TAIL_RE = re.compile(r"[A-Za-z][^֐-׿]*$")
 
 
 def _tokenize_words(text: str, prefix: str = ""):
@@ -138,8 +139,15 @@ def _tokenize_words(text: str, prefix: str = ""):
         i = 0
         while i < len(words):
             if _HEBREW_RE.search(words[i]):
-                tokens.append((words[i], is_bold))
-                i += 1
+                # A Hebrew prefix glued to English ("ו-Language Models") keeps
+                # the English words after it in the same chunk; split apart,
+                # they would be placed right-to-left and swap places.
+                j = i + 1
+                if _LATIN_TAIL_RE.search(words[i]):
+                    while j < len(words) and not _HEBREW_RE.search(words[j]):
+                        j += 1
+                tokens.append((" ".join(words[i:j]), is_bold))
+                i = j
             else:
                 j = i
                 while j < len(words) and not _HEBREW_RE.search(words[j]):

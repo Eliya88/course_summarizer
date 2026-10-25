@@ -4,7 +4,7 @@ and are easy to tune without touching pipeline logic."""
 # Bump this whenever SYSTEM_INSTRUCTION/AGENDA/SECTION/GLOSSARY prompts change
 # in a way that would make previously-cached results stale (e.g. language,
 # required formatting). It's folded into each unit's cache key.
-PROMPT_VERSION = "v13-grouped-topics"
+PROMPT_VERSION = "v14-figures-and-lists"
 # Bump when a book-only prompt changes; it is folded only into book units'
 # cache keys, so regular courses keep their cached summaries.
 BOOK_PROMPT_VERSION = "b3-question-refs"
@@ -170,7 +170,10 @@ figure that the text can't replace (a diagram, chart, table, or worked-example s
 photo, meme, or decorative image), put a line reading exactly "@@IMG@@ <deck> <page>" where it belongs, \
 with nothing else on that line: <deck> is the attached PDF's position in the order they were attached \
 (1 if there is only one) and <page> is the page number inside that PDF, counting its first page as 1. \
-Use at most about one per topic, only where the picture really helps. A standalone formula \
+Add one for every slide whose diagram, chart, or table carries real content, with no per-topic limit - \
+a topic that groups several such slides gets several. When a passage gives several parallel items \
+(benchmarks with their scores, steps, variants, pros and cons), write them as a bullet list, not one long \
+paragraph, and keep each paragraph to about 4 lines. A standalone formula \
 goes on its own line starting with "@@F@@ " followed by real LaTeX (e.g. \
 "@@F@@ P(w \\mid s) = \\frac{{P(s \\mid w)\\,P(w)}}{{P(s)}}") and nothing else on that line - it gets \
 rendered as actual typeset math. A short expression embedded mid-sentence instead stays plain typeable \
