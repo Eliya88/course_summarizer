@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import List, Optional
@@ -25,6 +26,8 @@ from .course_context import build_course_context
 # time and API call count roughly by this factor versus one call per topic,
 # at the cost of a larger per-call output budget.
 SECTION_BATCH_SIZE = 4
+# A slide deck part gets at most one agenda topic per this many slides.
+SLIDES_PER_TOPIC = 3
 SECTION_MAX_OUTPUT_TOKENS = 24000
 
 # Each source PDF is cut into this many page ranges, and each range gets its
@@ -168,6 +171,11 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
     agenda_prompt = prompts.AGENDA_PROMPT.format(digest=digest, unit_name=label)
     if course.book:
         agenda_prompt += prompts.BOOK_AGENDA_RULE
+        if course.focus:
+            agenda_prompt += prompts.FOCUS_AGENDA_RULE
+    else:
+        pages = sum(pdf_utils.page_count(p) for p in part_paths)
+        agenda_prompt += prompts.SLIDE_AGENDA_RULE.format(max_topics=max(3, math.ceil(pages / SLIDES_PER_TOPIC)))
     section_titles = _parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files]))
     print(f"  Agenda: {len(section_titles)} section(s)")
 

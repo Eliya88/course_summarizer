@@ -11,7 +11,7 @@ import yaml
 from pypdf import PdfReader
 
 from . import pdf_utils
-from .prompts import PROMPT_VERSION
+from .prompts import BOOK_PROMPT_VERSION, PROMPT_VERSION
 
 DEFAULT_MODEL = "claude-haiku-5-5"
 
@@ -56,7 +56,7 @@ class Unit:
         h.update(course.model.encode("utf-8"))
         # Only folded in when set, so regular courses keep their old keys.
         if course.book:
-            h.update(b"book")
+            h.update(BOOK_PROMPT_VERSION.encode("utf-8"))
         if course.focus:
             h.update(course.focus.encode("utf-8"))
         for p in self.source_paths(course):

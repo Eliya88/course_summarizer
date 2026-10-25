@@ -65,9 +65,22 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
     assert uploads == ["L1_p1-2.pdf", "L1_p3-4.pdf"]
     assert len(chats) == 2
     assert "part 1/2" in chats[0][0][0] and chats[0][0][1] == "L1_p1-2.pdf"
+    assert "Use at most 3 topics" in chats[0][0][0]  # 2 slides -> the floor of 3
     assert "- Topic 3: Gamma\n- Topic 4: Delta" in chats[1][2][0]
     assert "1. Alpha\n2. Beta\n3. Gamma\n4. Delta" in markdown
     assert "- **Term1** - x\n- **Term2** - x" in markdown
+
+
+def test_slide_agenda_allows_one_topic_per_three_slides(tmp_path, monkeypatch):
+    make_pdf(tmp_path / "L2.pdf", 24)
+    course = SimpleNamespace(model="m", book=False, focus="", output_dir=tmp_path / "out")
+    sends = []
+    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: None)
+    monkeypatch.setattr(pipeline.claude_client, "send", lambda chat, parts: sends.append(parts[0]) or "1. A\n2. B")
+
+    pipeline._summarize_part(None, course, "sys", "d", "L2", [], 1, [tmp_path / "L2.pdf"])
+
+    assert "Use at most 8 topics" in sends[0]
 
 
 def test_book_unit_is_one_chat_of_three_calls(tmp_path, monkeypatch):
@@ -75,7 +88,7 @@ def test_book_unit_is_one_chat_of_three_calls(tmp_path, monkeypatch):
     make_pdf(tmp_path / "lec" / "ch01.pdf", 4)
     course = SimpleNamespace(
         course_name="C", model="m", output_dir=tmp_path / "out",
-        lectures_dir=tmp_path / "lec", exercises_dir=tmp_path / "ex", book=True, focus="",
+        lectures_dir=tmp_path / "lec", exercises_dir=tmp_path / "ex", book=True, focus="Implement BPE",
     )
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
     sends = []
@@ -87,5 +100,5 @@ def test_book_unit_is_one_chat_of_three_calls(tmp_path, monkeypatch):
     pipeline.process_unit(None, course, Unit(name="Ch 1", lecture_files=["ch01.pdf"]), digest="", use_cache=False)
 
     assert len(sends) == 3  # agenda, all topics, glossary
-    assert sends[0].endswith(pipeline.prompts.BOOK_AGENDA_RULE)
+    assert sends[0].endswith(pipeline.prompts.BOOK_AGENDA_RULE + pipeline.prompts.FOCUS_AGENDA_RULE)
     assert "- Topic 5: E" in sends[1] and "4-5 pages" in sends[1]

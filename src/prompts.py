@@ -4,7 +4,10 @@ and are easy to tune without touching pipeline logic."""
 # Bump this whenever SYSTEM_INSTRUCTION/AGENDA/SECTION/GLOSSARY prompts change
 # in a way that would make previously-cached results stale (e.g. language,
 # required formatting). It's folded into each unit's cache key.
-PROMPT_VERSION = "v12-images-quality"
+PROMPT_VERSION = "v13-grouped-topics"
+# Bump when a book-only prompt changes; it is folded only into book units'
+# cache keys, so regular courses keep their cached summaries.
+BOOK_PROMPT_VERSION = "b3-question-refs"
 
 # Versions the past-exam question blocks separately from the summary prompts
 # above, so tuning EXAM_PROMPT only invalidates cached exam pages and leaves
@@ -79,10 +82,28 @@ earlier lecture). The current unit's PDF is what you must cover in full.
 # pages are much denser than slides, so a book gets a page ratio instead.
 SLIDE_LENGTH_RULE = ("Keep each topic tight: aim for roughly 1.5 times the length of its slide text, never "
                      "pad with restatements or summaries of what you just said.")
+# Added to AGENDA_PROMPT for a slide deck: without it the model titles almost
+# every slide as its own topic. {max_topics} scales with the deck's length.
+SLIDE_AGENDA_RULE = ("\n\nUse at most {max_topics} topics, in slide order. Group consecutive slides on the "
+                     "same theme under one topic - never one topic per slide (for example, instruction, "
+                     "alignment and reasoning tuning are one topic). Merge course-admin slides (syllabus, "
+                     "coursework, textbook) into one short topic. This is a ceiling, not a target: use fewer "
+                     "topics when the deck is simple.")
 # Added to AGENDA_PROMPT for a book: a chapter has far more sub-topics than
 # a slide deck, and every topic adds output, so the book gets a few broad ones.
 BOOK_AGENDA_RULE = ("\n\nThis is a long textbook chapter: group its content into at most 8 broad topics, "
-                    "in the order they appear, each spanning several of the chapter's sub-sections.")
+                    "in the order they appear, each spanning several of the chapter's sub-sections. Do not "
+                    "add a closing summary or recap topic.")
+# Added after BOOK_AGENDA_RULE when there is an assignment, so the 8-topic
+# limit never squeezes out something the assignment depends on.
+FOCUS_AGENDA_RULE = ("\n\nEvery subject of the assignment that this chapter teaches must be named in one of "
+                     "these topics - including supporting material it depends on, such as how data is split "
+                     "into training and test sets or how unknown words are handled - group topics to stay "
+                     "within the limit, but never merge such a subject away or drop it. Also include an "
+                     "assignment subject the chapter does not teach when it directly extends this chapter's "
+                     "material (for example another variant of a method the chapter explains); leave out "
+                     "subjects that belong to other chapters. Name topics after the material, never after "
+                     "the assignment's questions.")
 BOOK_LENGTH_RULE = ("Keep each topic tight: write about one page of summary per 4-5 pages of the book, "
                     "never pad with restatements or summaries of what you just said.")
 
@@ -94,9 +115,17 @@ read "book pages". Skip the chapter's "Historical Notes", "Exercises", and bibli
 
 FOCUS_NOTE = """
 - The student is studying this material for the assignment below. Explain in depth, with worked \
-examples of the same kind, every concept, formula, and algorithm the assignment relies on; cover the rest \
-of the material briefly. Never solve the assignment's own questions or reuse its specific numbers - teach \
-the material so the student can solve them alone.
+examples of the same kind, every concept, formula, and algorithm the assignment relies on - including \
+supporting material such as data splits and the handling of unknown words; cover the rest of the material \
+briefly. When the assignment uses a method that directly extends this chapter's material but the chapter \
+does not explain it, explain it briefly from standard knowledge and end that explanation with \
+"(הרחבה שאינה מהספר)".
+- Where a topic is what one of the assignment's questions relies on, you may point to that question by \
+its number and subject in one short line (e.g. "רלוונטי לשאלה 2 בתרגיל - Laplace smoothing"), but never \
+copy the question's wording, and never solve it, outline or hint at its solution. Never reuse its data, \
+numbers, words, or examples. Do not add a \
+proof or derivation the assignment asks for unless the book itself presents it, and then give it as the \
+book does. Teach the material so the student can solve the assignment alone.
 --- START OF ASSIGNMENT ---
 {focus}
 --- END OF ASSIGNMENT ---"""
