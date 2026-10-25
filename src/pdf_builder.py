@@ -177,11 +177,27 @@ def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
         pdf.set_font(FONT_FAMILY, style="B" if bold else "", size=size)
         return pdf.get_string_width(word)
 
-    words = _tokenize_words(text, prefix=prefix)
-    space_w = word_width(" ", False)
-
     right_edge = pdf.w - pdf.r_margin
     max_w = right_edge - pdf.l_margin
+
+    def fit_pieces(chunk: str, bold: bool) -> List[str]:
+        """A non-Hebrew chunk wider than a whole line (a long English
+        quote) is cut at spaces into pieces that each fit, so it wraps
+        instead of running off the page."""
+        pieces, cur = [], ""
+        for w in chunk.split(" "):
+            cand = f"{cur} {w}" if cur else w
+            if cur and word_width(cand, bold) > max_w:
+                pieces.append(cur)
+                cur = w
+            else:
+                cur = cand
+        return pieces + [cur]
+
+    # ponytail: a single space-less word wider than the line (a long URL) still overflows.
+    words = [(piece, b) for w, b in _tokenize_words(text, prefix=prefix)
+             for piece in (fit_pieces(w, b) if word_width(w, b) > max_w else [w])]
+    space_w = word_width(" ", False)
 
     lines, cur_line, cur_w = [], [], 0.0
     for word, is_bold in words:

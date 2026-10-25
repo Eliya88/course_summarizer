@@ -73,3 +73,15 @@ def test_unsupported_latex_is_rewritten_for_mathtext():
     ]:
         parser.parse(f"${pdf_builder._to_mathtext(body)}$")  # raises if still unsupported
     assert pdf_builder._to_mathtext(r"\bigcup_i A_i") == r"\bigcup_i A_i"  # real commands untouched
+
+
+def test_long_english_quote_wraps_inside_the_margins():
+    pdf = pdf_builder.NotebookPDF()
+    pdf_builder._register_font(pdf)
+    pdf.add_page()
+    cells = []
+    pdf.cell = lambda w, h, text: cells.append((pdf.get_x(), w))
+    quote = '"Write an essay about how aluminium cans are used in food storage. Include keywords waste, material and meal."'
+    pdf_builder._write_richtext(pdf, "דוגמה: " + quote, size=11.5, prefix="• ")
+    assert len(cells) > 3  # the quote was split across lines
+    assert all(x >= pdf.l_margin - 0.01 and x + w <= pdf.w - pdf.r_margin + 0.01 for x, w in cells)
