@@ -177,6 +177,7 @@ class App(tk.Tk):
             saved = {}
         self.base = tk.StringVar(value=os.path.normpath(saved["base"]) if saved.get("base") else "")
         self.base.trace_add("write", lambda *_: self._save_settings())
+        self.open_when_ready = bool(saved.get("open_when_ready"))
         self.mode = tk.StringVar(value="course")
         self.course_dir = tk.StringVar()
         self.book = tk.StringVar()
@@ -240,8 +241,7 @@ class App(tk.Tk):
         self.run_btn.pack(side="left")
         self.stop_btn = ttk.Button(actions, text="Stop", command=self.stop, state="disabled")
         self.stop_btn.pack(side="left", padx=8)
-        self.open_btn = ttk.Button(actions, text="Open PDF", state="disabled",
-                                   command=lambda: os.startfile(self.pdf_path))
+        self.open_btn = ttk.Button(actions, text="Open PDF", state="disabled", command=self._open)
         self.open_btn.pack(side="left")
         self.status = ttk.Label(actions, style="Root.TLabel")
         self.status.pack(side="right")
@@ -289,7 +289,8 @@ class App(tk.Tk):
 
     def _save_settings(self) -> None:
         SETTINGS.parent.mkdir(exist_ok=True)
-        SETTINGS.write_text(json.dumps({"base": self.base.get()}), encoding="utf-8")
+        SETTINGS.write_text(json.dumps({"base": self.base.get(), "open_when_ready": self.open_when_ready}),
+                            encoding="utf-8")
 
     def _prefix(self) -> str:
         return os.path.normpath(self.base.get()).rstrip("\\") + "\\" if self.base.get() else ""
@@ -329,7 +330,7 @@ class App(tk.Tk):
         self.tracker = Progress(with_tests="--with-tests" in args)
         self.stopped = False
         self.pdf_path = None
-        self.open_btn.configure(state="disabled")
+        self.open_btn.configure(state="normal", text=self._armed_text())
         self.run_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self._set_status("Running…", ACCENT)
@@ -375,12 +376,12 @@ class App(tk.Tk):
         # The full output is kept on disk instead of on screen, for when a run fails.
         LOG.parent.mkdir(exist_ok=True)
         LOG.write_text("".join(self.output), encoding="utf-8")
+        self.open_btn.configure(text="Open PDF",
+                                state="normal" if code == 0 and self.pdf_path else "disabled")
         if code == 0:
-            self.open_btn.configure(state=("normal" if self.pdf_path else "disabled"))
             self._show(1.0, "Your summary is ready")
             self._set_status("Done", GREEN)
-            if self.pdf_path and messagebox.askyesno(
-                    "Course Summarizer", f"Your summary is ready:\n{self.pdf_path}\n\nOpen it now?"):
+            if self.open_when_ready and self.pdf_path:
                 os.startfile(self.pdf_path)
         elif self.stopped:
             self._show(self.tracker.shown, "Stopped")
@@ -390,6 +391,18 @@ class App(tk.Tk):
             self._set_status("Failed", RED)
             tail = "".join(self.output[-12:]).strip() or f"Exit code {code}"
             messagebox.showerror("Course Summarizer", f"The run failed:\n\n{tail}\n\nFull output: {LOG}")
+
+    def _open(self) -> None:
+        # During a run the button toggles opening the PDF as soon as it's built.
+        if self.proc:
+            self.open_when_ready = not self.open_when_ready
+            self.open_btn.configure(text=self._armed_text())
+            self._save_settings()
+        else:
+            os.startfile(self.pdf_path)
+
+    def _armed_text(self) -> str:
+        return "✓  Opens when ready" if self.open_when_ready else "Open when ready"
 
     def stop(self) -> None:
         if self.proc:
