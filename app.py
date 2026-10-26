@@ -5,12 +5,14 @@ Launch with "Course Summarizer.bat" (no console) or `python app.py`.
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import re
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -36,8 +38,85 @@ BG, CARD, BORDER = "#f3f4f6", "#ffffff", "#e5e7eb"
 TEXT, MUTED = "#111827", "#6b7280"
 ACCENT, ACCENT_HOVER, ACCENT_OFF = "#2563eb", "#1d4ed8", "#93c5fd"
 GREEN, RED = "#16a34a", "#dc2626"
-LOG_BG, LOG_FG = "#0f172a", "#e2e8f0"
 FONT = "Segoe UI"
+LOG = ROOT / "output" / "last_run.log"
+
+SETUP, PDF = 0.03, 0.05  # bar shares before the first chapter and after the last
+EXAM = 0.15  # share of a chapter's slice for its past-exam question
+TAU = 25.0  # seconds; within a step the bar eases toward the step's end on this scale
+
+
+class Progress:
+    """Turns main.py's printed lines into a 0-1 estimate and a short label.
+
+    Every chapter gets an equal slice of the bar. Inside it, each part splits
+    into reading+agenda, planning, the topic batches and the glossary, weighted
+    roughly by how long those Claude calls take. Between lines the bar eases
+    toward the current step's end, so it keeps moving but never overshoots;
+    cached chapters jump straight to their end."""
+
+    def __init__(self, with_tests: bool) -> None:
+        self.exam = with_tests
+        self.units, self.unit = 1, -1
+        self.parts, self.part, self.first_topic = 1, 1, None
+        self.shown = 0.0
+        self._set((0.0, SETUP), "Starting…")
+
+    def _unit(self, lo: float, hi: float) -> tuple[float, float]:
+        size = (1 - SETUP - PDF) / self.units
+        base = SETUP + size * min(self.unit, self.units - 1)
+        return base + size * lo, base + size * hi
+
+    def _part(self, lo: float, hi: float) -> tuple[float, float]:
+        summary = 1 - EXAM if self.exam else 1.0
+        k = self.part - 1
+        return self._unit(summary * (k + lo) / self.parts, summary * (k + hi) / self.parts)
+
+    def _set(self, span: tuple[float, float], label: str, chapter: bool = False) -> None:
+        self.span, self.t0 = span, time.monotonic()
+        self.label = f"Chapter {self.unit + 1} of {self.units}  ·  {label}" if chapter else label
+
+    def feed(self, line: str) -> None:
+        s = line.strip()
+        if m := re.match(r"Course: .*units: (\d+)", s):
+            self.units = max(1, int(m[1]))
+        elif s.startswith("[course_context]"):
+            self._set(self.span, "Reading the course")
+        elif "no past-exam PDFs were found" in s:
+            self.exam = False
+        elif s.startswith("[pipeline] Uploading"):
+            self._set(self.span, "Uploading past exams")
+        elif m := re.match(r"\[pipeline\] (Using cached result for|Processing) unit", s):
+            self.unit += 1
+            self.parts, self.part = 1, 1
+            if m[1].startswith("Using"):
+                self._set(self._part(1, 1), "From cache", chapter=True)
+        elif m := re.match(r"Part (\d+)/(\d+):", s):
+            self.part, self.parts, self.first_topic = int(m[1]), int(m[2]), None
+            self._set(self._part(0, 0.15), "Reading the material", chapter=True)
+        elif s.startswith("Planning content boundaries"):
+            self._set(self._part(0.15, 0.25), "Planning topics", chapter=True)
+        elif m := re.match(r"Writing topics (\d+)-(\d+)/(\d+)", s):
+            a, b, last = map(int, m.groups())
+            if self.first_topic is None:
+                self.first_topic = a
+            n = last - self.first_topic + 1
+            lo, hi = (a - self.first_topic) / n, (b - self.first_topic + 1) / n
+            self._set(self._part(0.25 + 0.65 * lo, 0.25 + 0.65 * hi), f"Writing topics {a}–{b}", chapter=True)
+        elif s.startswith("Writing glossary"):
+            self._set(self._part(0.9, 1), "Writing key terms", chapter=True)
+        elif s.startswith("Looking for a past-exam question"):
+            self._set(self._unit(1 - EXAM, 1), "Finding an exam question", chapter=True)
+        elif s.startswith(("Using cached exam question", "No past-exam question")):
+            self.span, self.t0 = self._unit(1, 1), time.monotonic()
+        elif s.startswith("Building the PDF"):
+            self._set((1 - PDF, 1.0), "Building the PDF")
+
+    def value(self) -> float:
+        lo, hi = self.span
+        eased = lo + (hi - lo) * (1 - math.exp(-(time.monotonic() - self.t0) / TAU))
+        self.shown = max(self.shown, eased)
+        return self.shown
 
 
 def _style(root: tk.Tk) -> None:
@@ -76,14 +155,15 @@ def _style(root: tk.Tk) -> None:
     s.map("TCheckbutton", background=[("active", CARD)],
           indicatorbackground=[("selected", ACCENT)], indicatorforeground=[("selected", "white")])
     s.configure("Horizontal.TProgressbar", troughcolor=BORDER, background=ACCENT,
-                bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT, thickness=4)
+                bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT, thickness=int(px * 6))
+    s.configure("Percent.TLabel", background=BG, font=(FONT, 11, "bold"))
 
 
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Course Summarizer")
-        self.minsize(680, 640)
+        self.minsize(680, 0)
         self.configure(background=BG)
         _style(self)
         px = float(self.tk.call("tk", "scaling"))
@@ -167,20 +247,14 @@ class App(tk.Tk):
         self.status.pack(side="right")
         self._set_status("Ready", MUTED)
 
-        self.progress = ttk.Progressbar(page)
-        self.progress.pack(fill="x", pady=(0, 8))
-
-        log_frame = tk.Frame(page, background=LOG_BG)
-        log_frame.pack(fill="both", expand=True)
-        self.log = tk.Text(log_frame, height=14, state="disabled", wrap="word", font=("Consolas", 9),
-                           background=LOG_BG, foreground=LOG_FG, relief="flat", borderwidth=0,
-                           padx=12, pady=10)
-        scroll = ttk.Scrollbar(log_frame, command=self.log.yview)
-        self.log.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        self.log.pack(side="left", fill="both", expand=True)
-        self.log.tag_configure("ok", foreground="#4ade80")
-        self.log.tag_configure("err", foreground="#f87171")
+        self.progress = ttk.Progressbar(page, maximum=100)
+        self.progress.pack(fill="x", pady=(4, 6))
+        info = ttk.Frame(page, style="Root.TFrame")
+        info.pack(fill="x")
+        self.stage = ttk.Label(info, style="Subtitle.TLabel")
+        self.stage.pack(side="left")
+        self.percent = ttk.Label(info, style="Percent.TLabel")
+        self.percent.pack(side="right")
 
         self._sync_mode()
         self.bind("<Return>", lambda _: self.run_btn.instate(["!disabled"]) and self.start())
@@ -251,16 +325,14 @@ class App(tk.Tk):
         args = self._args()
         if args is None:
             return
-        self.log.configure(state="normal")
-        self.log.delete("1.0", "end")
-        self.log.configure(state="disabled")
+        self.output: list[str] = []
+        self.tracker = Progress(with_tests="--with-tests" in args)
+        self.stopped = False
         self.pdf_path = None
         self.open_btn.configure(state="disabled")
         self.run_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self._set_status("Running…", ACCENT)
-        self.progress.configure(mode="indeterminate")
-        self.progress.start(12)
 
         self.proc = subprocess.Popen(
             [str(PYTHON), str(ROOT / "main.py"), *args], cwd=ROOT,
@@ -278,38 +350,47 @@ class App(tk.Tk):
         self.lines.put(None)
 
     def _drain(self) -> None:
-        self.log.configure(state="normal")
         while not self.lines.empty():
             line = self.lines.get()
             if line is None:
-                self.log.configure(state="disabled")
                 self._finished()
                 return
+            self.output.append(line)
             if m := OUTPUT_RE.match(line):
                 self.pdf_path = m.group(1)
-            tag = ("ok" if line.startswith(("Done.", "Copied to"))
-                   else "err" if re.search(r"Error|Traceback", line) else "")
-            self.log.insert("end", line, tag)
-            self.log.see("end")
-        self.log.configure(state="disabled")
+            self.tracker.feed(line)
+        self._show(self.tracker.value(), self.tracker.label)
         self.after(100, self._drain)
+
+    def _show(self, value: float, label: str) -> None:
+        self.progress.configure(value=value * 100)
+        self.percent.configure(text=f"{int(value * 100)}%")
+        self.stage.configure(text=label)
 
     def _finished(self) -> None:
         code = self.proc.returncode
         self.proc = None
         self.run_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
-        if self.pdf_path:
-            self.open_btn.configure(state="normal")
-        self.progress.stop()
-        self.progress.configure(mode="determinate", value=0)
+        # The full output is kept on disk instead of on screen, for when a run fails.
+        LOG.parent.mkdir(exist_ok=True)
+        LOG.write_text("".join(self.output), encoding="utf-8")
         if code == 0:
+            self.open_btn.configure(state=("normal" if self.pdf_path else "disabled"))
+            self._show(1.0, "Your summary is ready")
             self._set_status("Done", GREEN)
+        elif self.stopped:
+            self._show(self.tracker.shown, "Stopped")
+            self._set_status("Stopped", MUTED)
         else:
-            self._set_status(f"Stopped (exit code {code})", RED)
+            self._show(self.tracker.shown, "Failed")
+            self._set_status("Failed", RED)
+            tail = "".join(self.output[-12:]).strip() or f"Exit code {code}"
+            messagebox.showerror("Course Summarizer", f"The run failed:\n\n{tail}\n\nFull output: {LOG}")
 
     def stop(self) -> None:
         if self.proc:
+            self.stopped = True
             self.proc.kill()
 
     def _close(self) -> None:

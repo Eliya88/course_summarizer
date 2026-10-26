@@ -100,6 +100,7 @@ def main() -> None:
     )
 
     output_path = course.output_dir / f"{course.course_name.replace(' ', '_')}_summary.pdf"
+    print("Building the PDF...")
     build_pdf(
         sections,
         output_path,
