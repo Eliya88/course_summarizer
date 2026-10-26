@@ -1,6 +1,6 @@
 """Desktop window for main.py: pick a course or book, tick options, press Run.
 
-Launch with "Exam Prep.bat" (no console) or `python app.py`.
+Launch with "Course Summarizer.bat" (no console) or `python app.py`.
 """
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def _style(root: tk.Tk) -> None:
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Exam Prep Summarizer")
+        self.title("Course Summarizer")
         self.minsize(680, 640)
         self.configure(background=BG)
         _style(self)
@@ -107,7 +107,7 @@ class App(tk.Tk):
         page = ttk.Frame(self, style="Root.TFrame", padding=(20, 16, 20, 20))
         page.pack(fill="both", expand=True)
 
-        ttk.Label(page, text="Exam Prep Summarizer", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(page, text="Course Summarizer", style="Title.TLabel").pack(anchor="w")
         ttk.Label(page, text="Turn a course's lectures, or a textbook's chapters, into one study PDF.",
                   style="Subtitle.TLabel").pack(anchor="w", pady=(0, 14))
 
@@ -229,20 +229,20 @@ class App(tk.Tk):
         if self.mode.get() == "course":
             course = Path(self.base.get()) / self.course_dir.get().strip()
             if not self.course_dir.get().strip() or not course.is_dir():
-                messagebox.showerror("Exam Prep", f"No course folder at:\n{course}")
+                messagebox.showerror("Course Summarizer", f"No course folder at:\n{course}")
                 return None
             args = ["--course-dir", str(course)]
         else:
             if not Path(self.book.get()).is_file():
-                messagebox.showerror("Exam Prep", "Choose the book PDF.")
+                messagebox.showerror("Course Summarizer", "Choose the book PDF.")
                 return None
             if not self.chapters.get().strip():
-                messagebox.showerror("Exam Prep", "Enter chapters, e.g. 1-5 or 1,3,5.")
+                messagebox.showerror("Course Summarizer", "Enter chapters, e.g. 1-5 or 1,3,5.")
                 return None
             args = ["--book", self.book.get(), "--chapters", self.chapters.get().strip()]
             if self.focus.get():
                 if not Path(self.focus.get()).is_file():
-                    messagebox.showerror("Exam Prep", "The focus PDF doesn't exist.")
+                    messagebox.showerror("Course Summarizer", "The focus PDF doesn't exist.")
                     return None
                 args += ["--focus", self.focus.get()]
         return args + [flag for flag, on in self.flags.items() if on.get()]
@@ -313,7 +313,7 @@ class App(tk.Tk):
             self.proc.kill()
 
     def _close(self) -> None:
-        if self.proc and not messagebox.askyesno("Exam Prep", "A run is in progress. Stop it and quit?"):
+        if self.proc and not messagebox.askyesno("Course Summarizer", "A run is in progress. Stop it and quit?"):
             return
         self.stop()
         self.destroy()

@@ -1,6 +1,6 @@
-# exam_prep_summarizer
+# course_summarizer
 
-Turns a course's lecture + exercise PDFs into one exam-study PDF, using the
+Turns a course's lecture + exercise PDFs into one study PDF, using the
 Claude API (Claude Haiku 5.5). Works for any course with a similar folder layout - not just
 Data Science.
 
@@ -106,10 +106,10 @@ python main.py --book "path/to/book.pdf" --chapters 1-5 --focus "path/to/ex1.pdf
   depth and worked examples, the rest stays brief, and its own questions
   are never solved.
 
-The PDF is written to `output/<book>/<book>_ch1-5_exam_prep.pdf` and copied
+The PDF is written to `output/<book>/<book>_ch1-5_summary.pdf` and copied
 next to the book.
 
-Output PDF lands in `output/<course_name>/<course_name>_exam_prep.pdf`
+Output PDF lands in `output/<course_name>/<course_name>_summary.pdf`
 for options A and B.
 
 Flags:

@@ -46,7 +46,7 @@ def list_pdfs(dir_path: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build one exam-prep PDF from a course's lectures + exercises.")
+    parser = argparse.ArgumentParser(description="Build one summary PDF from a course's lectures + exercises.")
     parser.add_argument("--course-dir", type=str, help="Path to a course folder containing Lectures/Exercises subfolders - auto-discovers units, no YAML needed")
     parser.add_argument("--course", type=str, help="Path to a course YAML config, e.g. courses/data_science.yaml")
     parser.add_argument("--no-cache", action="store_true", help="Re-call Claude for every unit even if a cached result exists")
@@ -99,7 +99,7 @@ def main() -> None:
         with_tests=args.with_tests,
     )
 
-    output_path = course.output_dir / f"{course.course_name.replace(' ', '_')}_exam_prep.pdf"
+    output_path = course.output_dir / f"{course.course_name.replace(' ', '_')}_summary.pdf"
     build_pdf(
         sections,
         output_path,

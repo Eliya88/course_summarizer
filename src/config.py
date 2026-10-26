@@ -99,7 +99,7 @@ def load_course_config(yaml_path: Path) -> CourseConfig:
     with open(yaml_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
-    root_dir = yaml_path.parent  # config files live in exam_prep_summarizer/courses/
+    root_dir = yaml_path.parent  # config files live in course_summarizer/courses/
 
     def resolve(p: Optional[str], default: str) -> Path:
         raw = p if p else default
