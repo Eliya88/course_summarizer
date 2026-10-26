@@ -379,6 +379,9 @@ class App(tk.Tk):
             self.open_btn.configure(state=("normal" if self.pdf_path else "disabled"))
             self._show(1.0, "Your summary is ready")
             self._set_status("Done", GREEN)
+            if self.pdf_path and messagebox.askyesno(
+                    "Course Summarizer", f"Your summary is ready:\n{self.pdf_path}\n\nOpen it now?"):
+                os.startfile(self.pdf_path)
         elif self.stopped:
             self._show(self.tracker.shown, "Stopped")
             self._set_status("Stopped", MUTED)
