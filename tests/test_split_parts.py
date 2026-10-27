@@ -2,11 +2,12 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from pypdf import PdfReader, PdfWriter
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src import pdf_utils, pipeline
+from src import config, pdf_utils, pipeline
 from src.config import Unit
 
 
@@ -41,7 +42,7 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
     make_pdf(tmp_path / "lec" / "L1.pdf", 4)
     course = SimpleNamespace(
         course_name="C", model="m", output_dir=tmp_path / "out",
-        lectures_dir=tmp_path / "lec", exercises_dir=tmp_path / "ex", book=False, focus="",
+        lectures_dir=tmp_path / "lec", exercises_dir=tmp_path / "ex", book=False, focus="", instructions="",
     )
     unit = Unit(name="Unit 1", lecture_files=["L1.pdf"])
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
@@ -73,7 +74,7 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
 
 def test_slide_agenda_allows_one_topic_per_three_slides(tmp_path, monkeypatch):
     make_pdf(tmp_path / "L2.pdf", 24)
-    course = SimpleNamespace(model="m", book=False, focus="", output_dir=tmp_path / "out")
+    course = SimpleNamespace(model="m", book=False, focus="", instructions="", output_dir=tmp_path / "out")
     sends = []
     monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline.claude_client, "send", lambda chat, parts: sends.append(parts[0]) or "1. A\n2. B")
@@ -88,7 +89,7 @@ def test_book_unit_is_one_chat_of_three_calls(tmp_path, monkeypatch):
     make_pdf(tmp_path / "lec" / "ch01.pdf", 4)
     course = SimpleNamespace(
         course_name="C", model="m", output_dir=tmp_path / "out",
-        lectures_dir=tmp_path / "lec", exercises_dir=tmp_path / "ex", book=True, focus="Implement BPE",
+        lectures_dir=tmp_path / "lec", exercises_dir=tmp_path / "ex", book=True, focus="Implement BPE", instructions="",
     )
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
     sends = []
@@ -102,3 +103,42 @@ def test_book_unit_is_one_chat_of_three_calls(tmp_path, monkeypatch):
     assert len(sends) == 3  # agenda, all topics, glossary
     assert sends[0].endswith(pipeline.prompts.BOOK_AGENDA_RULE + pipeline.prompts.FOCUS_AGENDA_RULE)
     assert "- Topic 5: E" in sends[1] and "4-5 pages" in sends[1]
+
+
+def test_transcripts_join_their_lecture_or_become_their_own(tmp_path):
+    (tmp_path / "Lectures").mkdir()
+    make_pdf(tmp_path / "Lectures" / "L1 - Intro.pdf", 1)
+    make_pdf(tmp_path / "Lectures" / "L3.pdf", 1)
+    (tmp_path / "Recordings" / "Transcript").mkdir(parents=True)
+    for name in ("L1.txt", "L2.txt", "_L3.txt"):
+        (tmp_path / "Recordings" / "Transcript" / name).write_text("x", encoding="utf-8")
+    course = config.discover_course_config(tmp_path)
+
+    assert config.attach_transcripts(course) == 2
+    assert [(u.name, u.lecture_files, u.transcript_file) for u in course.units] == [
+        ("L1 - Intro", ["L1 - Intro.pdf"], "L1.txt"),
+        ("L2", [], "L2.txt"),
+        ("L3", ["L3.pdf"], ""),
+    ]
+
+
+def test_transcript_only_unit_is_one_chat_over_the_text(tmp_path, monkeypatch):
+    (tmp_path / "t").mkdir()
+    (tmp_path / "t" / "L2.txt").write_text("word " * 4000, encoding="utf-8")
+    course = SimpleNamespace(
+        course_name="C", model="m", output_dir=tmp_path / "out", lectures_dir=tmp_path / "lec",
+        exercises_dir=tmp_path / "ex", transcripts_dir=tmp_path / "t", book=False, focus="", instructions="",
+    )
+    monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
+    systems, sends = [], []
+    monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda *a: pytest.fail("no PDF to upload"))
+    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda client, model, system, **kw: systems.append(system))
+    monkeypatch.setattr(pipeline.claude_client, "send", lambda chat, parts: sends.append(parts) or "1. A\n2. B")
+
+    pipeline.process_unit(None, course, Unit(name="L2", transcript_file="L2.txt"), digest="d", use_cache=False)
+
+    assert len(systems) == 1 and pipeline.prompts.TRANSCRIPT_ONLY_NOTE in systems[0]
+    agenda, doc = sends[0]
+    assert doc["source"]["type"] == "text" and doc["title"] == "L2.txt"
+    assert agenda.endswith(pipeline.prompts.TRANSCRIPT_ONLY_AGENDA_RULE.format(max_topics=3))  # 4000 words
+    assert pipeline.prompts.TRANSCRIPT_ONLY_LENGTH_RULE in sends[2][0]

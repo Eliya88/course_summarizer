@@ -49,6 +49,15 @@ def upload_pdf(client, pdf_path: Path) -> dict:
     }
 
 
+def text_document(path: Path) -> dict:
+    """A .txt file (a lecture transcript) as a plain-text document block."""
+    return {
+        "type": "document",
+        "source": {"type": "text", "media_type": "text/plain", "data": path.read_text(encoding="utf-8-sig")},
+        "title": path.name,
+    }
+
+
 class Chat:
     def __init__(self, client, model: str, system: str, max_tokens: int):
         self.client, self.model, self.system, self.max_tokens = client, model, system, max_tokens

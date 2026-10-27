@@ -9,6 +9,10 @@ Usage:
     python main.py --course courses/data_science.yaml --refresh-context
     python main.py --book "book.pdf" --chapters 1-5 --focus "ex1.pdf"  # chapters of a textbook, focused on an assignment
     python main.py --list-pdfs "Data Science/Lectures"   # helper to write configs
+
+Lecture transcripts (.txt) in a "Transcript(s)" folder anywhere in the course
+folder are always used: "L1.txt" joins the lecture PDF starting with "L1", and
+one with no matching PDF is summarized on its own. A leading "_" skips one.
 """
 from __future__ import annotations
 
@@ -31,7 +35,8 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.config import discover_book_config, discover_course_config, load_course_config, parse_chapters
+from src.config import (attach_transcripts, discover_book_config, discover_course_config, load_course_config,
+                        parse_chapters)
 from src.pdf_builder import build_pdf
 from src.pipeline import run
 
@@ -56,6 +61,7 @@ def main() -> None:
     parser.add_argument("--book", type=str, help="Path to a textbook PDF with chapter bookmarks - summarizes the --chapters given, shorter than a regular run")
     parser.add_argument("--chapters", type=str, help="With --book: chapter numbers, e.g. 1-5 or 1,3,5")
     parser.add_argument("--focus", type=str, help="With --book: an assignment PDF the summary should go deep on")
+    parser.add_argument("--instructions", type=str, help='Extra instructions for the model, e.g. "Explain unfamiliar words in a footnote"')
     parser.add_argument("--list-pdfs", type=str, metavar="DIR", help="List PDFs in DIR formatted for a course YAML, then exit")
     args = parser.parse_args()
 
@@ -80,9 +86,13 @@ def main() -> None:
     else:
         course = load_course_config(Path(args.course))
 
+    course.instructions = (args.instructions or "").strip()
+    if not args.book and (n_transcripts := attach_transcripts(course)):
+        print(f"  Transcripts: {n_transcripts} from {course.transcripts_dir}")
+
     if not args.with_exercises:
-        excluded = [u for u in course.units if not u.lecture_files]
-        course.units = [u for u in course.units if u.lecture_files]
+        excluded = [u for u in course.units if not (u.lecture_files or u.transcript_file)]
+        course.units = [u for u in course.units if u.lecture_files or u.transcript_file]
         for u in excluded:
             print(f"  skipping exercise unit (pass --with-exercises to include): {u.name}")
 

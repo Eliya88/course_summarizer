@@ -28,6 +28,8 @@ from .course_context import build_course_context
 SECTION_BATCH_SIZE = 4
 # A slide deck part gets at most one agenda topic per this many slides.
 SLIDES_PER_TOPIC = 3
+# A slide-less (transcript-only) lecture gets one topic per this many words.
+WORDS_PER_TOPIC = 1500
 SECTION_MAX_OUTPUT_TOKENS = 24000
 
 # Each source PDF is cut into this many page ranges, and each range gets its
@@ -113,10 +115,15 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
     return block or None
 
 
-def _system_instruction(course: CourseConfig) -> str:
+def _system_instruction(course: CourseConfig, unit: Optional[Unit] = None) -> str:
+    """`unit` adds its transcript note; the exam call leaves it out, as it sends no transcript."""
     extra = prompts.BOOK_NOTE if course.book else ""
     if course.focus:
         extra += prompts.FOCUS_NOTE.format(focus=course.focus)
+    if unit and unit.transcript_file:
+        extra += prompts.TRANSCRIPT_NOTE if unit.lecture_files else prompts.TRANSCRIPT_ONLY_NOTE
+    if course.instructions:
+        extra += prompts.INSTRUCTIONS_NOTE.format(instructions=course.instructions)
     return prompts.SYSTEM_INSTRUCTION.format(course_name=course.course_name, extra=extra)
 
 
@@ -158,12 +165,14 @@ def _resolve_images(body: str, part_paths: List[Path], img_dir: Path) -> str:
 
 
 def _summarize_part(client, course: CourseConfig, system_instruction: str, digest: str, label: str,
-                    uploaded_files: List, first_index: int, part_paths: List[Path]):
+                    uploaded_files: List, first_index: int, part_paths: List[Path], transcript_words: int = 0):
     """One chat over one part of a unit: agenda -> outline -> sections ->
     glossary. Topic numbers start at `first_index` so they keep counting
     across parts. `part_paths` are the local chunk PDFs behind
     `uploaded_files`, used to pull out the slide images the model points at.
-    Returns (topic titles, section bodies, glossary)."""
+    `transcript_words` > 0 means a lecture transcript is attached too; with
+    no `part_paths` it is the only source. Returns (topic titles, section
+    bodies, glossary)."""
     chat = claude_client.start_chat(
         client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
     )
@@ -173,9 +182,14 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
         agenda_prompt += prompts.BOOK_AGENDA_RULE
         if course.focus:
             agenda_prompt += prompts.FOCUS_AGENDA_RULE
+    elif not part_paths:
+        max_topics = max(3, math.ceil(transcript_words / WORDS_PER_TOPIC))
+        agenda_prompt += prompts.TRANSCRIPT_ONLY_AGENDA_RULE.format(max_topics=max_topics)
     else:
         pages = sum(pdf_utils.page_count(p) for p in part_paths)
         agenda_prompt += prompts.SLIDE_AGENDA_RULE.format(max_topics=max(3, math.ceil(pages / SLIDES_PER_TOPIC)))
+        if transcript_words:
+            agenda_prompt += prompts.TRANSCRIPT_AGENDA_RULE
     section_titles = _parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files]))
     print(f"  Agenda: {len(section_titles)} section(s)")
 
@@ -186,6 +200,12 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
         print("  Planning content boundaries...")
         claude_client.send(chat, [prompts.OUTLINE_PROMPT])
 
+    if course.book:
+        length_rule = prompts.BOOK_LENGTH_RULE
+    elif transcript_words:
+        length_rule = prompts.TRANSCRIPT_LENGTH_RULE if part_paths else prompts.TRANSCRIPT_ONLY_LENGTH_RULE
+    else:
+        length_rule = prompts.SLIDE_LENGTH_RULE
     numbered_titles = list(enumerate(section_titles, start=first_index))
     last_index = numbered_titles[-1][0]
     section_bodies = []
@@ -196,8 +216,7 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
               f"{', '.join(t for _, t in batch)}")
         topic_list = "\n".join(f"- Topic {i}: {t}" for i, t in batch)
         body = claude_client.send(chat, [prompts.SECTION_PROMPT.format(
-            n=len(batch), topic_list=topic_list,
-            length_rule=prompts.BOOK_LENGTH_RULE if course.book else prompts.SLIDE_LENGTH_RULE)])
+            n=len(batch), topic_list=topic_list, length_rule=length_rule)])
         section_bodies.append(_resolve_images(body, part_paths, course.output_dir / "cache" / "images"))
 
     print("  Writing glossary...")
@@ -217,23 +236,32 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     missing = [p for p in unit.source_paths(course) if not p.exists()]
     for m in missing:
         print(f"  [warn] configured file not found, skipping: {m}")
-    if not source_paths:
+    transcript = unit.transcript_path(course)
+    if not source_paths and not transcript:
         raise FileNotFoundError(f"No source PDFs found for unit '{unit.name}'")
 
     chunk_dir = course.output_dir / "cache" / "chunks"
     per_file = [pdf_utils.split_pdf(p, 1 if course.book else PARTS_PER_FILE, chunk_dir) for p in source_paths]
-    # Part k = the k-th page range of every source file.
-    parts = _group_parts(per_file)
+    # Part k = the k-th page range of every source file. A transcript-only
+    # lecture is one part with no PDFs.
+    parts = _group_parts(per_file) or [[]]
+    # The whole transcript goes with every part: it has no timestamps to cut
+    # it at the slides' page ranges, so the prompt picks the matching passages.
+    transcript_doc = claude_client.text_document(transcript) if transcript else None
+    transcript_words = len(transcript_doc["source"]["data"].split()) if transcript_doc else 0
 
-    system_instruction = _system_instruction(course)
+    system_instruction = _system_instruction(course, unit)
     all_titles, section_bodies, glossaries = [], [], []
     for k, part in enumerate(parts, start=1):
         label = unit.name if len(parts) == 1 else f"{unit.name} (part {k}/{len(parts)})"
-        print(f"  Part {k}/{len(parts)}: uploading {', '.join(p.name for p in part)} to Claude...")
+        names = [p.name for p in part] + ([transcript.name] if transcript else [])
+        print(f"  Part {k}/{len(parts)}: uploading {', '.join(names)} to Claude...")
         uploaded_files = [claude_client.upload_pdf(client, p) for p in part]
+        if transcript_doc:
+            uploaded_files.append(transcript_doc)
         titles, bodies, glossary = _summarize_part(
             client, course, system_instruction, digest, label, uploaded_files,
-            first_index=len(all_titles) + 1, part_paths=part,
+            first_index=len(all_titles) + 1, part_paths=part, transcript_words=transcript_words,
         )
         all_titles += titles
         section_bodies += bodies

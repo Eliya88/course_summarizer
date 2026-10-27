@@ -11,7 +11,7 @@ import yaml
 from pypdf import PdfReader
 
 from . import pdf_utils
-from .prompts import BOOK_PROMPT_VERSION, PROMPT_VERSION
+from .prompts import BOOK_PROMPT_VERSION, PROMPT_VERSION, TRANSCRIPT_PROMPT_VERSION
 
 DEFAULT_MODEL = "claude-haiku-5-5"
 
@@ -25,6 +25,8 @@ _EXAM_DIR_NAMES = {
     "tests", "test", "exams", "exam", "past exams", "previous exams",
     "מבחנים", "מבחנים קודמים", "בחינות",
 }
+# Lecture-recording transcripts (.txt), looked for anywhere under the course.
+_TRANSCRIPT_DIR_NAMES = {"transcript", "transcripts", "transcipts", "תמלול", "תמלולים"}
 
 
 def _natural_key(s: str) -> list:
@@ -42,6 +44,11 @@ class Unit:
     name: str
     lecture_files: List[str] = field(default_factory=list)
     exercise_files: List[str] = field(default_factory=list)
+    # A .txt transcript of the lecture recording, in course.transcripts_dir.
+    transcript_file: str = ""
+
+    def transcript_path(self, course: "CourseConfig") -> Optional[Path]:
+        return course.transcripts_dir / self.transcript_file if self.transcript_file else None
 
     def source_paths(self, course: "CourseConfig") -> List[Path]:
         paths = [course.lectures_dir / f for f in self.lecture_files]
@@ -59,6 +66,14 @@ class Unit:
             h.update(BOOK_PROMPT_VERSION.encode("utf-8"))
         if course.focus:
             h.update(course.focus.encode("utf-8"))
+        if course.instructions:
+            h.update(course.instructions.encode("utf-8"))
+        if self.transcript_file:
+            t = self.transcript_path(course)
+            h.update(TRANSCRIPT_PROMPT_VERSION.encode("utf-8"))
+            h.update(t.name.encode("utf-8"))
+            if t.exists():
+                h.update(str(t.stat().st_mtime_ns).encode("utf-8"))
         for p in self.source_paths(course):
             h.update(p.name.encode("utf-8"))
             if p.exists():
@@ -82,6 +97,10 @@ class CourseConfig:
     book: bool = False
     # Text of an assignment (--focus) the summary should go deep on.
     focus: str = ""
+    # Extra prompt text from --instructions, added to every call's system prompt.
+    instructions: str = ""
+    # Folder of lecture transcripts, set by attach_transcripts().
+    transcripts_dir: Optional[Path] = None
 
     def exam_paths(self) -> List[Path]:
         """Past-exam PDFs, natural-sorted. Same leading-underscore skip rule
@@ -212,6 +231,42 @@ def discover_course_config(
         model=model,
         exams_dir=exams_dir,
     )
+
+
+def _lecture_key(stem: str):
+    """"L1 - Intro" and "L1" share key 1; a name with no leading number is its own key."""
+    m = re.match(r"\s*L?\s*(\d+)", stem, re.I)
+    return int(m[1]) if m else stem.strip().lower()
+
+
+def attach_transcripts(course: CourseConfig) -> int:
+    """Pairs each .txt in the course's transcripts folder with the lecture unit
+    of the same lecture key (see _lecture_key); a transcript with no lecture
+    PDF becomes a lecture unit of its own. Returns how many were found."""
+    root = course.lectures_dir.parent
+    found = sorted(d for d in root.rglob("*") if d.is_dir() and d.name.lower() in _TRANSCRIPT_DIR_NAMES) \
+        if root.exists() else []
+    if not found:
+        return 0
+    course.transcripts_dir = found[0]
+    texts = sorted((p for p in course.transcripts_dir.glob("*.txt") if not p.stem.startswith("_")),
+                   key=lambda p: _natural_key(p.stem))
+    by_key = {_lecture_key(Path(u.lecture_files[0]).stem): u for u in course.units if u.lecture_files}
+    added = []
+    for t in texts:
+        unit = by_key.get(_lecture_key(t.stem))
+        if unit:
+            unit.transcript_file = t.name
+        else:
+            print(f"  transcript {t.name} matches no lecture PDF - summarizing it on its own")
+            added.append(Unit(name=_clean_unit_name(t.stem), transcript_file=t.name))
+    if added:
+        # ponytail: re-sorts lectures by name, so a YAML's hand-picked unit
+        # order is lost when it gets a transcript-only lecture.
+        lectures = [u for u in course.units if u.lecture_files] + added
+        course.units = sorted(lectures, key=lambda u: _natural_key(u.name)) + \
+            [u for u in course.units if not u.lecture_files]
+    return len(texts)
 
 
 def parse_chapters(spec: str) -> List[int]:

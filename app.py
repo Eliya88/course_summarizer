@@ -183,6 +183,7 @@ class App(tk.Tk):
         self.book = tk.StringVar()
         self.chapters = tk.StringVar()
         self.focus = tk.StringVar()
+        self.instructions = tk.StringVar()
         self.flags = {flag: tk.BooleanVar() for _, _, flag in OPTIONS}
 
         page = ttk.Frame(self, style="Root.TFrame", padding=(20, 16, 20, 20))
@@ -234,6 +235,8 @@ class App(tk.Tk):
             cell.grid(row=i // 2, column=i % 2, sticky="w", pady=4)
             ttk.Checkbutton(cell, text=text, variable=self.flags[flag]).pack(anchor="w")
             ttk.Label(cell, text=hint, style="Muted.TLabel").pack(anchor="w", padx=(int(px * 11) + 10, 0))
+        ttk.Label(options, text="EXTRA INSTRUCTIONS  ·  OPTIONAL", style="Field.TLabel").pack(anchor="w", pady=(10, 0))
+        ttk.Entry(options, textvariable=self.instructions).pack(fill="x", pady=(2, 0))
 
         actions = ttk.Frame(page, style="Root.TFrame")
         actions.pack(fill="x", pady=(4, 8))
@@ -259,6 +262,11 @@ class App(tk.Tk):
         self._sync_mode()
         self.bind("<Return>", lambda _: self.run_btn.instate(["!disabled"]) and self.start())
         self.protocol("WM_DELETE_WINDOW", self._close)
+
+        # Open centered on the screen instead of Windows' default top-left spot.
+        self.update_idletasks()
+        w, h = max(self.winfo_reqwidth(), 680), self.winfo_reqheight()
+        self.geometry(f"+{(self.winfo_screenwidth() - w) // 2}+{max(0, (self.winfo_screenheight() - h) // 2 - 30)}")
 
     def _card(self, parent, title: str) -> ttk.Frame:
         outer = tk.Frame(parent, background=CARD, highlightbackground=BORDER, highlightthickness=1)
@@ -320,6 +328,8 @@ class App(tk.Tk):
                     messagebox.showerror("Course Summarizer", "The focus PDF doesn't exist.")
                     return None
                 args += ["--focus", self.focus.get()]
+        if self.instructions.get().strip():
+            args += ["--instructions", self.instructions.get().strip()]
         return args + [flag for flag, on in self.flags.items() if on.get()]
 
     def start(self) -> None:

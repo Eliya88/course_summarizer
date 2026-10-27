@@ -8,6 +8,9 @@ PROMPT_VERSION = "v14-figures-and-lists"
 # Bump when a book-only prompt changes; it is folded only into book units'
 # cache keys, so regular courses keep their cached summaries.
 BOOK_PROMPT_VERSION = "b3-question-refs"
+# Same idea for the transcript-only prompts: folded only into the keys of
+# units that have a lecture transcript.
+TRANSCRIPT_PROMPT_VERSION = "t1"
 
 # Versions the past-exam question blocks separately from the summary prompts
 # above, so tuning EXAM_PROMPT only invalidates cached exam pages and leaves
@@ -112,6 +115,47 @@ BOOK_NOTE = """
 - The attached PDF is a textbook chapter, not a slide deck: wherever these instructions say "slides", \
 read "book pages". Skip the chapter's "Historical Notes", "Exercises", and bibliography sections. Use the \
 "@@IMG@@" marker only for a figure that is an embedded picture on the page."""
+
+# A lecture transcript (Transcript folder) is speech recognition: noisy, but
+# the lecturer's own explanations. Shared by both transcript notes below.
+TRANSCRIPT_NOISE = """ The transcript is automatic speech recognition: words are misheard, sentences \
+break off, and it is mixed with small talk, questions from the room and course logistics. Skip small \
+talk, logistics, asides about current events and anything not taught as course material. Never quote \
+the transcript or write that the lecturer said something - teach the content in your own voice."""
+
+TRANSCRIPT_NOTE = """
+- A plain-text transcript of the recorded lecture is attached next to the slides. Use it to add what the \
+lecturer explained, the examples they gave and the points they stressed that the slides leave out. The \
+slides and the course digest stay the authority on terms, names and spelling - where the transcript \
+garbles a term, write it as they spell it. The transcript covers the whole lecture while the attached \
+slides may be only part of the deck: use only the passages about the material on these slides.""" + TRANSCRIPT_NOISE
+
+TRANSCRIPT_ONLY_NOTE = """
+- This unit has no slides: the attached plain-text transcript of the recorded lecture is your primary \
+content source - wherever these instructions say "slides" or "deck", read "transcript". Many names and \
+terms in it are misheard: write each one in its correct form, using the course digest and your knowledge \
+of the subject, and leave out a term you cannot identify rather than guess. There are no figures, so \
+never write the "@@IMG@@" marker.""" + TRANSCRIPT_NOISE
+
+# Agenda and length rules for a unit with a transcript, used in place of (or,
+# with slides, on top of) the slide rules above.
+TRANSCRIPT_AGENDA_RULE = (" Topics follow the slides: add a topic from the transcript only for a subject "
+                          "the lecturer spends real time on that no attached slide covers.")
+TRANSCRIPT_ONLY_AGENDA_RULE = ("\n\nUse at most {max_topics} topics, in the order the lecture discusses them. "
+                               "Group consecutive talk on the same theme under one topic, and leave out small "
+                               "talk and course logistics. This is a ceiling, not a target: use fewer topics "
+                               "when the lecture is simple.")
+TRANSCRIPT_LENGTH_RULE = ("Keep each topic tight: aim for roughly twice the length of its slide text, using the "
+                          "extra room for what the transcript adds, and never pad with restatements or "
+                          "summaries of what you just said.")
+TRANSCRIPT_ONLY_LENGTH_RULE = ("Keep each topic tight: aim for about a quarter of the length of the transcript "
+                               "passages it covers, and never pad with restatements or summaries of what you "
+                               "just said.")
+
+# --instructions: the student's own extra request, appended last so it wins.
+INSTRUCTIONS_NOTE = """
+- The student added these instructions - follow them throughout:
+{instructions}"""
 
 FOCUS_NOTE = """
 - The student is studying this material for the assignment below. Explain in depth, with worked \
