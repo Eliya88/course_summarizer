@@ -90,3 +90,14 @@ def test_long_english_quote_wraps_inside_the_margins():
 def test_english_after_a_hebrew_prefix_stays_in_one_chunk():
     words = [w for w, _ in pdf_builder._tokenize_words("Tokens ו-Language Models של **ה-BPE** מודל")]
     assert words == ["Tokens", "ו-Language Models", "של", "ה-BPE", "מודל"]
+
+
+def test_chapter_topic_list_links_to_each_topic(tmp_path):
+    pypdf = __import__("pypdf")
+    section = "# Unit\n\n## נושאים:\n\n1. First\n2. Second\n\n### 1. First\n\nbody\n\n### 2. Second\n\nbody"
+    out = pdf_builder.build_pdf(["# Cover", section], tmp_path / "out.pdf", chapter_titles=["Unit"])
+    reader = pypdf.PdfReader(out)
+    page_of = {p.indirect_reference.idnum: i for i, p in enumerate(reader.pages)}
+    # Page 2 is the chapter page with the topic list; topics start pages 3 and 4.
+    targets = [page_of[a.get_object()["/Dest"][0].idnum] for a in reader.pages[1]["/Annots"]]
+    assert targets == [2, 3]

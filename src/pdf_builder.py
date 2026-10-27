@@ -453,10 +453,17 @@ _FORMULA_RE = re.compile(r"^@@F@@\s*(.*)$")
 _IMG_RE = re.compile(r"^@@IMG@@\s*(.+)$")
 # Cover-page table-of-contents entry: "@@TOC@@ 3|Corpus Linguistics".
 _TOC_RE = re.compile(r"^@@TOC@@\s*(\d+)\|(.*)$")
+# A chapter's numbered topic list ("3. title" under "## נושאים:") and the
+# "### 3. title" heading each item jumps to.
+_NUMBERED_RE = re.compile(r"^(\d+)[\.\)]\s+(.*)$")
+_TOPICS_HEADING = "נושאים"
 
 
 def _render_section(pdf: FPDF, section_md: str,
                     chapter_links: Optional[List[int]] = None) -> None:
+    # Topic links are seeded at page 1 and retargeted when their heading is
+    # drawn, the same way chapter links are (see build_pdf).
+    topic_links, in_topics = {}, False
     for raw_line in section_md.splitlines():
         line = raw_line.rstrip()
         if not line.strip():
@@ -486,7 +493,19 @@ def _render_section(pdf: FPDF, section_md: str,
             # An empty "### " the model sometimes leaves behind would draw a blank subject page.
             title = (heading_match.group(2) or "").strip()
             if title:
-                _write_heading(pdf, title, len(heading_match.group(1)))
+                level = len(heading_match.group(1))
+                in_topics = level == 2 and title.rstrip(":").strip() == _TOPICS_HEADING
+                _write_heading(pdf, title, level)
+                numbered = _NUMBERED_RE.match(title)
+                if level == 3 and numbered and numbered.group(1) in topic_links:
+                    pdf.set_link(topic_links.pop(numbered.group(1)), page=pdf.page_no(), y=0)
+            continue
+
+        topic_match = _NUMBERED_RE.match(line.strip()) if in_topics else None
+        if topic_match:
+            number = topic_match.group(1)
+            topic_links[number] = pdf.add_link(page=1)
+            _write_toc_item(pdf, int(number), topic_match.group(2).strip(), topic_links[number])
             continue
 
         list_match = _LIST_RE.match(line)
