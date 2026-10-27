@@ -11,6 +11,8 @@ BOOK_PROMPT_VERSION = "b3-question-refs"
 # Same idea for the transcript-only prompts: folded only into the keys of
 # units that have a lecture transcript.
 TRANSCRIPT_PROMPT_VERSION = "t3-later-slides"
+# Bumped on its own for units with a transcript and no slides.
+TRANSCRIPT_ONLY_PROMPT_VERSION = "to1-no-digest-content"
 
 # Versions the past-exam question blocks separately from the summary prompts
 # above, so tuning EXAM_PROMPT only invalidates cached exam pages and leaves
@@ -134,8 +136,9 @@ TRANSCRIPT_ONLY_NOTE = """
 - This unit has no slides: the attached plain-text transcript of the recorded lecture is your primary \
 content source - wherever these instructions say "slides" or "deck", read "transcript". Many names and \
 terms in it are misheard: write each one in its correct form, using the course digest and your knowledge \
-of the subject, and leave out a term you cannot identify rather than guess. There are no figures, so \
-never write the "@@IMG@@" marker.""" + TRANSCRIPT_NOISE
+of the subject, and leave out a term you cannot identify rather than guess. Use the digest only for that \
+and for connecting to other lectures: never add a topic, scholar, argument or example the transcript does \
+not discuss. There are no figures, so never write the "@@IMG@@" marker.""" + TRANSCRIPT_NOISE
 
 # Agenda and length rules for a unit with a transcript, used in place of (or,
 # with slides, on top of) the slide rules above.

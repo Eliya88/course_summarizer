@@ -11,7 +11,7 @@ import yaml
 from pypdf import PdfReader
 
 from . import pdf_utils
-from .prompts import BOOK_PROMPT_VERSION, PROMPT_VERSION, TRANSCRIPT_PROMPT_VERSION
+from .prompts import BOOK_PROMPT_VERSION, PROMPT_VERSION, TRANSCRIPT_ONLY_PROMPT_VERSION, TRANSCRIPT_PROMPT_VERSION
 
 DEFAULT_MODEL = "claude-haiku-5-5"
 
@@ -71,6 +71,8 @@ class Unit:
         if self.transcript_file:
             t = self.transcript_path(course)
             h.update(TRANSCRIPT_PROMPT_VERSION.encode("utf-8"))
+            if not self.lecture_files:
+                h.update(TRANSCRIPT_ONLY_PROMPT_VERSION.encode("utf-8"))
             h.update(t.name.encode("utf-8"))
             if t.exists():
                 h.update(str(t.stat().st_mtime_ns).encode("utf-8"))

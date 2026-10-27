@@ -26,6 +26,9 @@ from PIL import Image
 
 FONT_FAMILY = "PlaypenHebrew"
 FONT_PATH = Path(__file__).parent.parent / "assets" / "fonts" / "PlaypenSansHebrew.ttf"
+FALLBACK_FAMILY = "Fallback"
+FALLBACK_FONT_PATH = Path("C:/Windows/Fonts/arial.ttf")
+FALLBACK_BOLD_PATH = Path("C:/Windows/Fonts/arialbd.ttf")
 
 INK_COLOR = (43, 38, 38)          # body text - warm near-black
 HEADING_COLOR = (172, 74, 39)     # burnt-orange marker color for headings
@@ -89,6 +92,11 @@ class NotebookPDF(FPDF):
 def _register_font(pdf: FPDF) -> None:
     pdf.add_font(FONT_FAMILY, style="", fname=str(FONT_PATH), variations={"wght": 420})
     pdf.add_font(FONT_FAMILY, style="B", fname=str(FONT_PATH), variations={"wght": 750})
+    # Playpen has no Greek, so Greek words fall back to Arial where Windows has it.
+    if FALLBACK_FONT_PATH.exists() and FALLBACK_BOLD_PATH.exists():
+        pdf.add_font(FALLBACK_FAMILY, style="", fname=str(FALLBACK_FONT_PATH))
+        pdf.add_font(FALLBACK_FAMILY, style="B", fname=str(FALLBACK_BOLD_PATH))
+        pdf.set_fallback_fonts([FALLBACK_FAMILY])
 
 
 _BOLD_TOKEN_RE = re.compile(r"(\*\*.+?\*\*)", re.S)
