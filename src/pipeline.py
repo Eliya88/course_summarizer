@@ -139,7 +139,8 @@ def _merge_glossaries(glossaries: List[str]) -> str:
     seen, lines = set(), []
     for line in "\n".join(glossaries).splitlines():
         match = re.match(r"\s*[-*]\s*\*\*(.+?)\*\*", line)
-        term = match.group(1).strip().lower() if match else None
+        # "Stasis (מרידה פנימית)" is the same term as "Stasis".
+        term = match.group(1).split("(")[0].strip().lower() if match else None
         if term in seen:
             continue
         if term:
@@ -165,13 +166,15 @@ def _resolve_images(body: str, part_paths: List[Path], img_dir: Path) -> str:
 
 
 def _summarize_part(client, course: CourseConfig, system_instruction: str, digest: str, label: str,
-                    uploaded_files: List, first_index: int, part_paths: List[Path], transcript_words: int = 0):
+                    uploaded_files: List, first_index: int, part_paths: List[Path], transcript_words: int = 0,
+                    covered_titles: List[str] = ()):
     """One chat over one part of a unit: agenda -> outline -> sections ->
     glossary. Topic numbers start at `first_index` so they keep counting
     across parts. `part_paths` are the local chunk PDFs behind
     `uploaded_files`, used to pull out the slide images the model points at.
     `transcript_words` > 0 means a lecture transcript is attached too; with
-    no `part_paths` it is the only source. Returns (topic titles, section
+    no `part_paths` it is the only source. `covered_titles` are the topics of
+    the unit's earlier parts, which a transcript part must not repeat. Returns (topic titles, section
     bodies, glossary)."""
     chat = claude_client.start_chat(
         client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
@@ -190,6 +193,9 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
         agenda_prompt += prompts.SLIDE_AGENDA_RULE.format(max_topics=max(3, math.ceil(pages / SLIDES_PER_TOPIC)))
         if transcript_words:
             agenda_prompt += prompts.TRANSCRIPT_AGENDA_RULE
+            if covered_titles:
+                agenda_prompt += prompts.TRANSCRIPT_COVERED_RULE.format(
+                    covered="\n".join(f"- {t}" for t in covered_titles))
     section_titles = _parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files]))
     print(f"  Agenda: {len(section_titles)} section(s)")
 
@@ -262,6 +268,7 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
         titles, bodies, glossary = _summarize_part(
             client, course, system_instruction, digest, label, uploaded_files,
             first_index=len(all_titles) + 1, part_paths=part, transcript_words=transcript_words,
+            covered_titles=all_titles,
         )
         all_titles += titles
         section_bodies += bodies

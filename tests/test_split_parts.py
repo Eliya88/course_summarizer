@@ -35,6 +35,7 @@ def test_group_parts_takes_kth_chunk_of_each_file():
 def test_merge_glossaries_drops_repeated_terms():
     merged = pipeline._merge_glossaries(["- **BERT** - a\n- **RNN** - b", "- **bert** - again\n- **LSTM** - c"])
     assert merged == "- **BERT** - a\n- **RNN** - b\n- **LSTM** - c"
+    assert pipeline._merge_glossaries(["- **Stasis** - a", "- **Stasis (מרידה)** - b"]) == "- **Stasis** - a"
 
 
 def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path, monkeypatch):
@@ -70,6 +71,35 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
     assert "- Topic 3: Gamma\n- Topic 4: Delta" in chats[1][2][0]
     assert "1. Alpha\n2. Beta\n3. Gamma\n4. Delta" in markdown
     assert "- **Term1** - x\n- **Term2** - x" in markdown
+
+
+def test_later_part_with_transcript_skips_earlier_topics(tmp_path, monkeypatch):
+    (tmp_path / "lec").mkdir()
+    make_pdf(tmp_path / "lec" / "L1.pdf", 4)
+    (tmp_path / "t").mkdir()
+    (tmp_path / "t" / "L1.txt").write_text("word " * 100, encoding="utf-8")
+    course = SimpleNamespace(
+        course_name="C", model="m", output_dir=tmp_path / "out", lectures_dir=tmp_path / "lec",
+        exercises_dir=tmp_path / "ex", transcripts_dir=tmp_path / "t", book=False, focus="", instructions="",
+    )
+    monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
+    agendas = []
+    monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda client, p: p.name)
+    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: None)
+
+    def fake_send(chat, parts):
+        if parts[0].startswith("Here is the full-course"):
+            agendas.append(parts[0])
+        return "1. Alpha\n2. Beta"
+
+    monkeypatch.setattr(pipeline.claude_client, "send", fake_send)
+
+    pipeline.process_unit(None, course, Unit(name="L1", lecture_files=["L1.pdf"], transcript_file="L1.txt"),
+                          digest="d", use_cache=False)
+
+    assert len(agendas) == 2
+    assert "already covers" not in agendas[0]
+    assert agendas[1].endswith(pipeline.prompts.TRANSCRIPT_COVERED_RULE.format(covered="- Alpha\n- Beta"))
 
 
 def test_slide_agenda_allows_one_topic_per_three_slides(tmp_path, monkeypatch):

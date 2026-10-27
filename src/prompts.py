@@ -10,7 +10,7 @@ PROMPT_VERSION = "v14-figures-and-lists"
 BOOK_PROMPT_VERSION = "b3-question-refs"
 # Same idea for the transcript-only prompts: folded only into the keys of
 # units that have a lecture transcript.
-TRANSCRIPT_PROMPT_VERSION = "t1"
+TRANSCRIPT_PROMPT_VERSION = "t2-skip-covered"
 
 # Versions the past-exam question blocks separately from the summary prompts
 # above, so tuning EXAM_PROMPT only invalidates cached exam pages and leaves
@@ -141,6 +141,11 @@ never write the "@@IMG@@" marker.""" + TRANSCRIPT_NOISE
 # with slides, on top of) the slide rules above.
 TRANSCRIPT_AGENDA_RULE = (" Topics follow the slides: add a topic from the transcript only for a subject "
                           "the lecturer spends real time on that no attached slide covers.")
+# The whole transcript goes with every part of a deck, so a later part is
+# told which topics the earlier parts already wrote up.
+TRANSCRIPT_COVERED_RULE = ("\n\nAn earlier part of this lecture's summary already covers these topics:\n{covered}\n"
+                           "Do not make a topic of any of them, and when writing your topics leave out "
+                           "transcript passages that belong to them.")
 TRANSCRIPT_ONLY_AGENDA_RULE = ("\n\nUse at most {max_topics} topics, in the order the lecture discusses them. "
                                "Group consecutive talk on the same theme under one topic, and leave out small "
                                "talk and course logistics. This is a ceiling, not a target: use fewer topics "
