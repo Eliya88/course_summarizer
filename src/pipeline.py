@@ -133,12 +133,17 @@ def _group_parts(per_file: List[List[Path]]) -> List[List[Path]]:
     return [[chunks[k] for chunks in per_file if k < len(chunks)] for k in range(n_parts)]
 
 
+_GLOSSARY_TERM_RE = re.compile(r"^\s*[-*]\s*\*\*(.+?)\*\*", re.M)
+# Cap on the later slides' text an earlier transcript part is shown.
+LATER_SLIDES_MAX_CHARS = 6000
+
+
 def _merge_glossaries(glossaries: List[str]) -> str:
     """Joins the per-part glossaries, keeping only the first entry for a term
     that shows up in more than one part."""
     seen, lines = set(), []
     for line in "\n".join(glossaries).splitlines():
-        match = re.match(r"\s*[-*]\s*\*\*(.+?)\*\*", line)
+        match = _GLOSSARY_TERM_RE.match(line)
         # "Stasis (מרידה פנימית)" is the same term as "Stasis".
         term = match.group(1).split("(")[0].strip().lower() if match else None
         if term in seen:
@@ -167,15 +172,17 @@ def _resolve_images(body: str, part_paths: List[Path], img_dir: Path) -> str:
 
 def _summarize_part(client, course: CourseConfig, system_instruction: str, digest: str, label: str,
                     uploaded_files: List, first_index: int, part_paths: List[Path], transcript_words: int = 0,
-                    covered_titles: List[str] = ()):
+                    covered_titles: List[str] = (), later_slides: str = "", covered_terms: List[str] = ()):
     """One chat over one part of a unit: agenda -> outline -> sections ->
     glossary. Topic numbers start at `first_index` so they keep counting
     across parts. `part_paths` are the local chunk PDFs behind
     `uploaded_files`, used to pull out the slide images the model points at.
     `transcript_words` > 0 means a lecture transcript is attached too; with
     no `part_paths` it is the only source. `covered_titles` are the topics of
-    the unit's earlier parts, which a transcript part must not repeat. Returns (topic titles, section
-    bodies, glossary)."""
+    the unit's earlier parts, and `later_slides` the text of its later parts'
+    slides: a transcript part leaves both alone. `covered_terms` are the
+    earlier parts' glossary terms. Returns (topic titles, section bodies,
+    glossary)."""
     chat = claude_client.start_chat(
         client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
     )
@@ -196,6 +203,8 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
             if covered_titles:
                 agenda_prompt += prompts.TRANSCRIPT_COVERED_RULE.format(
                     covered="\n".join(f"- {t}" for t in covered_titles))
+            if later_slides:
+                agenda_prompt += prompts.TRANSCRIPT_LATER_RULE.format(later=later_slides)
     section_titles = _parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files]))
     print(f"  Agenda: {len(section_titles)} section(s)")
 
@@ -226,7 +235,10 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
         section_bodies.append(_resolve_images(body, part_paths, course.output_dir / "cache" / "images"))
 
     print("  Writing glossary...")
-    glossary_text = claude_client.send(chat, [prompts.GLOSSARY_PROMPT])
+    glossary_prompt = prompts.GLOSSARY_PROMPT
+    if covered_terms:
+        glossary_prompt += prompts.GLOSSARY_COVERED_RULE.format(terms=", ".join(covered_terms))
+    glossary_text = claude_client.send(chat, [glossary_prompt])
     return section_titles, section_bodies, glossary_text
 
 
@@ -263,12 +275,16 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
         names = [p.name for p in part] + ([transcript.name] if transcript else [])
         print(f"  Part {k}/{len(parts)}: uploading {', '.join(names)} to Claude...")
         uploaded_files = [claude_client.upload_pdf(client, p) for p in part]
+        later_slides = ""
         if transcript_doc:
             uploaded_files.append(transcript_doc)
+            later_slides = "\n\n".join(
+                pdf_utils.extract_text(p) for later in parts[k:] for p in later)[:LATER_SLIDES_MAX_CHARS]
         titles, bodies, glossary = _summarize_part(
             client, course, system_instruction, digest, label, uploaded_files,
             first_index=len(all_titles) + 1, part_paths=part, transcript_words=transcript_words,
-            covered_titles=all_titles,
+            covered_titles=all_titles, later_slides=later_slides.strip(),
+            covered_terms=_GLOSSARY_TERM_RE.findall("\n".join(glossaries)),
         )
         all_titles += titles
         section_bodies += bodies

@@ -10,7 +10,7 @@ PROMPT_VERSION = "v14-figures-and-lists"
 BOOK_PROMPT_VERSION = "b3-question-refs"
 # Same idea for the transcript-only prompts: folded only into the keys of
 # units that have a lecture transcript.
-TRANSCRIPT_PROMPT_VERSION = "t2-skip-covered"
+TRANSCRIPT_PROMPT_VERSION = "t3-later-slides"
 
 # Versions the past-exam question blocks separately from the summary prompts
 # above, so tuning EXAM_PROMPT only invalidates cached exam pages and leaves
@@ -146,6 +146,11 @@ TRANSCRIPT_AGENDA_RULE = (" Topics follow the slides: add a topic from the trans
 TRANSCRIPT_COVERED_RULE = ("\n\nAn earlier part of this lecture's summary already covers these topics:\n{covered}\n"
                            "Do not make a topic of any of them, and when writing your topics leave out "
                            "transcript passages that belong to them.")
+# ...and an earlier part is told what the later slides say, so it leaves the
+# transcript passages about them to the part that has those slides.
+TRANSCRIPT_LATER_RULE = ("\n\nA later part of this lecture's summary covers the deck's next slides, whose text "
+                         "is:\n{later}\nDo not make a topic of their subjects, and when writing your topics leave "
+                         "out transcript passages about them, even where they touch your slides.")
 TRANSCRIPT_ONLY_AGENDA_RULE = ("\n\nUse at most {max_topics} topics, in the order the lecture discusses them. "
                                "Group consecutive talk on the same theme under one topic, and leave out small "
                                "talk and course logistics. This is a ceiling, not a target: use fewer topics "
@@ -280,3 +285,8 @@ Format each line exactly as:
 - **Term** - הגדרה קצרה וברורה בעברית, במשפט או שניים.
 
 Do not include anything except this bullet list."""
+
+# A later part's glossary skips the terms the earlier parts already defined,
+# including under another spelling ("Helot" / "Helots").
+GLOSSARY_COVERED_RULE = ("\n\nAn earlier part of this unit's glossary already defines these terms - leave them "
+                         "out, including under another spelling, transliteration or singular/plural form:\n{terms}")

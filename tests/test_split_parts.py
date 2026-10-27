@@ -56,7 +56,7 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
         chat.append(parts)
         if parts[0].startswith("Here is the full-course"):
             return "1. Alpha\n2. Beta" if len(chats) == 1 else "1. Gamma\n2. Delta"
-        if parts[0] == pipeline.prompts.GLOSSARY_PROMPT:
+        if parts[0].startswith(pipeline.prompts.GLOSSARY_PROMPT):
             return f"- **Term{len(chats)}** - x"
         return parts[0][-40:]
 
@@ -83,13 +83,17 @@ def test_later_part_with_transcript_skips_earlier_topics(tmp_path, monkeypatch):
         exercises_dir=tmp_path / "ex", transcripts_dir=tmp_path / "t", book=False, focus="", instructions="",
     )
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
-    agendas = []
+    monkeypatch.setattr(pipeline.pdf_utils, "extract_text", lambda p: f"text of {p.name}")
+    agendas, glossaries = [], []
     monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda client, p: p.name)
     monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: None)
 
     def fake_send(chat, parts):
         if parts[0].startswith("Here is the full-course"):
             agendas.append(parts[0])
+        if parts[0].startswith(pipeline.prompts.GLOSSARY_PROMPT):
+            glossaries.append(parts[0])
+            return "- **Helot** - x"
         return "1. Alpha\n2. Beta"
 
     monkeypatch.setattr(pipeline.claude_client, "send", fake_send)
@@ -98,8 +102,11 @@ def test_later_part_with_transcript_skips_earlier_topics(tmp_path, monkeypatch):
                           digest="d", use_cache=False)
 
     assert len(agendas) == 2
+    assert agendas[0].endswith(pipeline.prompts.TRANSCRIPT_LATER_RULE.format(later="text of L1_p3-4.pdf"))
     assert "already covers" not in agendas[0]
     assert agendas[1].endswith(pipeline.prompts.TRANSCRIPT_COVERED_RULE.format(covered="- Alpha\n- Beta"))
+    assert glossaries[0] == pipeline.prompts.GLOSSARY_PROMPT
+    assert glossaries[1].endswith(pipeline.prompts.GLOSSARY_COVERED_RULE.format(terms="Helot"))
 
 
 def test_slide_agenda_allows_one_topic_per_three_slides(tmp_path, monkeypatch):
