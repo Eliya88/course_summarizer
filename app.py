@@ -133,6 +133,10 @@ def _style(root: tk.Tk) -> None:
     s.configure("Field.TLabel", foreground=MUTED, font=(FONT, 8, "bold"))
     s.configure("TEntry", padding=6, fieldbackground=CARD, lightcolor=BORDER, darkcolor=BORDER)
     s.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)])
+    s.configure("TCombobox", padding=6, fieldbackground=CARD, background=CARD, arrowcolor=MUTED,
+                lightcolor=BORDER, darkcolor=BORDER)
+    s.map("TCombobox", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
+          fieldbackground=[("readonly", CARD)], background=[("active", BG)])
     s.configure("TButton", background=CARD, lightcolor=CARD, darkcolor=CARD,
                 focuscolor=CARD, padding=(14, 6))
     s.map("TButton", background=[("active", BG)], foreground=[("disabled", "#9ca3af")])
@@ -204,7 +208,8 @@ class App(tk.Tk):
             ttk.Radiobutton(switch, text=text, value=value, variable=self.mode,
                             style="Seg.Toolbutton", command=self._sync_mode).pack(side="left")
 
-        # The course is typed as a name under the base folder, shown as a prefix.
+        # The course is a folder under the base folder, shown as a prefix: picked
+        # from the list (rescanned each time it opens) or typed.
         self.course_panel = ttk.Frame(source)
         ttk.Label(self.course_panel, text="COURSE NAME", style="Field.TLabel").pack(anchor="w")
         row = ttk.Frame(self.course_panel)
@@ -213,7 +218,9 @@ class App(tk.Tk):
         prefix.pack(side="left")
         self.base.trace_add("write", lambda *_: prefix.configure(text=self._prefix()))
         prefix.configure(text=self._prefix())
-        ttk.Entry(row, textvariable=self.course_dir).pack(side="left", fill="x", expand=True, padx=(4, 0))
+        courses = ttk.Combobox(row, textvariable=self.course_dir)
+        courses.configure(postcommand=lambda: courses.configure(values=self._courses()))
+        courses.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         self.book_panel = ttk.Frame(source)
         ttk.Label(self.book_panel, text="BOOK PDF", style="Field.TLabel").pack(anchor="w")
@@ -302,6 +309,13 @@ class App(tk.Tk):
 
     def _prefix(self) -> str:
         return os.path.normpath(self.base.get()).rstrip("\\") + "\\" if self.base.get() else ""
+
+    def _courses(self) -> list[str]:
+        try:
+            return sorted(d.name for d in Path(self.base.get()).iterdir()
+                          if d.is_dir() and not d.name.startswith((".", "_")))
+        except OSError:
+            return []
 
     def _sync_mode(self) -> None:
         book = self.mode.get() == "book"
