@@ -63,6 +63,11 @@ def _unit_cache_path(course: CourseConfig, unit: Unit) -> Path:
     return course.output_dir / "cache" / f"unit_{unit.cache_key(course)}.json"
 
 
+def _part_cache_path(course: CourseConfig, unit: Unit, k: int, n: int) -> Path:
+    """One part's result, so a failed run only redoes the part it failed in."""
+    return course.output_dir / "cache" / f"part_{unit.cache_key(course)}_{k}of{n}.json"
+
+
 def _exam_fingerprint(course: CourseConfig) -> str:
     """Identity of the past-exam material + the prompt that consumes it, so
     swapping in a new exam paper regenerates the practice pages."""
@@ -277,20 +282,27 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     all_titles, section_bodies, glossaries = [], [], []
     for k, part in enumerate(parts, start=1):
         label = unit.name if len(parts) == 1 else f"{unit.name} (part {k}/{len(parts)})"
-        names = [p.name for p in part] + ([transcript.name] if transcript else [])
-        log(f"  Part {k}/{len(parts)}: uploading {', '.join(names)} to Claude...")
-        uploaded_files = [claude_client.upload_pdf(client, p) for p in part]
-        later_slides = ""
-        if transcript_doc:
-            uploaded_files.append(transcript_doc)
-            later_slides = "\n\n".join(
-                pdf_utils.extract_text(p) for later in parts[k:] for p in later)[:LATER_SLIDES_MAX_CHARS]
-        titles, bodies, glossary = _summarize_part(
-            client, course, system_instruction, digest, label, uploaded_files,
-            first_index=len(all_titles) + 1, part_paths=part, transcript_words=transcript_words,
-            covered_titles=all_titles, later_slides=later_slides.strip(),
-            covered_terms=_GLOSSARY_TERM_RE.findall("\n".join(glossaries)),
-        )
+        part_cache = _part_cache_path(course, unit, k, len(parts))
+        if use_cache and part_cache.exists():
+            log(f"  Part {k}/{len(parts)}: using cached result")
+            titles, bodies, glossary = json.loads(part_cache.read_text(encoding="utf-8"))
+        else:
+            names = [p.name for p in part] + ([transcript.name] if transcript else [])
+            log(f"  Part {k}/{len(parts)}: uploading {', '.join(names)} to Claude...")
+            uploaded_files = [claude_client.upload_pdf(client, p) for p in part]
+            later_slides = ""
+            if transcript_doc:
+                uploaded_files.append(transcript_doc)
+                later_slides = "\n\n".join(
+                    pdf_utils.extract_text(p) for later in parts[k:] for p in later)[:LATER_SLIDES_MAX_CHARS]
+            titles, bodies, glossary = _summarize_part(
+                client, course, system_instruction, digest, label, uploaded_files,
+                first_index=len(all_titles) + 1, part_paths=part, transcript_words=transcript_words,
+                covered_titles=all_titles, later_slides=later_slides.strip(),
+                covered_terms=_GLOSSARY_TERM_RE.findall("\n".join(glossaries)),
+            )
+            part_cache.parent.mkdir(parents=True, exist_ok=True)
+            part_cache.write_text(json.dumps([titles, bodies, glossary], ensure_ascii=False), encoding="utf-8")
         all_titles += titles
         section_bodies += bodies
         glossaries.append(glossary)

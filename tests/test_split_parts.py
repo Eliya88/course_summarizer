@@ -73,6 +73,35 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
     assert "- **Term1** - x\n- **Term2** - x" in markdown
 
 
+def test_rerun_after_a_failed_part_reuses_the_parts_before_it(tmp_path, monkeypatch):
+    (tmp_path / "lec").mkdir()
+    make_pdf(tmp_path / "lec" / "L1.pdf", 4)
+    course = SimpleNamespace(
+        course_name="C", model="m", output_dir=tmp_path / "out",
+        lectures_dir=tmp_path / "lec", exercises_dir=tmp_path / "ex", book=False, focus="", instructions="",
+    )
+    unit = Unit(name="Unit 1", lecture_files=["L1.pdf"])
+    monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
+    uploads = []
+    monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda client, p: uploads.append(p.name) or p.name)
+    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: None)
+    fail = [True]
+
+    def fake_send(chat, parts):
+        if uploads[-1] == "L1_p3-4.pdf" and fail[0]:
+            raise ConnectionError
+        return "1. A\n2. B" if parts[0].startswith("Here is the full-course") else "x"
+
+    monkeypatch.setattr(pipeline.claude_client, "send", fake_send)
+    try:
+        pipeline.process_unit(None, course, unit, digest="d")
+    except ConnectionError:
+        pass
+    fail[0], uploads[:] = False, []
+    pipeline.process_unit(None, course, unit, digest="d")
+    assert uploads == ["L1_p3-4.pdf"]
+
+
 def test_later_part_with_transcript_skips_earlier_topics(tmp_path, monkeypatch):
     (tmp_path / "lec").mkdir()
     make_pdf(tmp_path / "lec" / "L1.pdf", 4)

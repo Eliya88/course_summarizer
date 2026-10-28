@@ -119,7 +119,10 @@ class Chapter:
             span, label = (summary, summary), "From cache"
         elif m := re.match(r"Part (\d+)/(\d+):", s):
             self.part, self.parts, self.first_topic = int(m[1]), int(m[2]), None
-            span, label = self._part(summary, 0, 0.15), "Reading the material"
+            if s.endswith("using cached result"):
+                span, label = self._part(summary, 1, 1), "From cache"
+            else:
+                span, label = self._part(summary, 0, 0.15), "Reading the material"
         elif s.startswith("Planning content boundaries"):
             span, label = self._part(summary, 0.15, 0.25), "Planning topics"
         elif m := re.match(r"Writing topics (\d+)-(\d+)/(\d+)", s):

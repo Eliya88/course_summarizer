@@ -45,3 +45,11 @@ def test_cached_chapter_jumps_to_its_summary_end():
     size = (1 - app.SETUP - app.PDF) / 4
     assert abs(p.value() - (app.SETUP + size)) < 1e-9
     assert p.label.startswith("Chapter 3 of 4")
+
+
+def test_cached_part_jumps_to_that_parts_end():
+    p = app.Progress(with_tests=False)
+    p.feed("Course: X  |  model: m  |  units: 1")
+    p.feed("[1]   Part 1/2: using cached result")
+    size = 1 - app.SETUP - app.PDF
+    assert abs(p.value() - (app.SETUP + size / 2)) < 1e-9
