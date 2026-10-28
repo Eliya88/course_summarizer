@@ -179,3 +179,21 @@ def test_transcript_only_unit_is_one_chat_over_the_text(tmp_path, monkeypatch):
     assert doc["source"]["type"] == "text" and doc["title"] == "L2.txt"
     assert agenda.endswith(pipeline.prompts.TRANSCRIPT_ONLY_AGENDA_RULE.format(max_topics=3))  # 4000 words
     assert pipeline.prompts.TRANSCRIPT_ONLY_LENGTH_RULE in sends[2][0]
+
+
+def test_run_overlaps_units_and_keeps_their_order(monkeypatch, capsys):
+    import threading
+    started = threading.Barrier(3, timeout=5)  # fails unless all 3 units run at once
+
+    def fake_unit(client, course, unit, digest, use_cache=True):
+        pipeline.log(f"start {unit.name}")
+        started.wait()
+        return unit.name
+
+    monkeypatch.setattr(pipeline.claude_client, "make_client", lambda: None)
+    monkeypatch.setattr(pipeline, "build_course_context", lambda course, force=False: "")
+    monkeypatch.setattr(pipeline, "process_unit", fake_unit)
+    course = SimpleNamespace(book=False, course_name="C", units=[Unit(name=n) for n in "ABC"])
+    assert pipeline.run(course)[1:] == ["A", "B", "C"]
+    lines = capsys.readouterr().out.splitlines()
+    assert sorted(lines) == ["[1] start A", "[2] start B", "[3] start C"]

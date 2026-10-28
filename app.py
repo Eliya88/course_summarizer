@@ -49,74 +49,98 @@ TAU = 25.0  # seconds; within a step the bar eases toward the step's end on this
 class Progress:
     """Turns main.py's printed lines into a 0-1 estimate and a short label.
 
-    Every chapter gets an equal slice of the bar. Inside it, each part splits
-    into reading+agenda, planning, the topic batches and the glossary, weighted
-    roughly by how long those Claude calls take. Between lines the bar eases
-    toward the current step's end, so it keeps moving but never overshoots;
-    cached chapters jump straight to their end."""
+    Every chapter gets an equal slice of the bar. Chapters run in parallel and
+    tag their lines "[<n>] ", so each keeps its own step. Inside a chapter,
+    each part splits into reading+agenda, planning, the topic batches and the
+    glossary, weighted roughly by how long those Claude calls take. Between
+    lines a step eases toward its end, so the bar keeps moving but never
+    overshoots; cached chapters jump straight to their end."""
 
     def __init__(self, with_tests: bool) -> None:
         self.exam = with_tests
-        self.units, self.unit = 1, -1
-        self.parts, self.part, self.first_topic = 1, 1, None
+        self.units = 1
+        self.chapters: dict[int, Chapter] = {}
         self.shown = 0.0
-        self._set((0.0, SETUP), "Starting…")
+        self.span, self.t0 = (0.0, SETUP), time.monotonic()  # outside any chapter
+        self.label = "Starting…"
 
-    def _unit(self, lo: float, hi: float) -> tuple[float, float]:
-        size = (1 - SETUP - PDF) / self.units
-        base = SETUP + size * min(self.unit, self.units - 1)
-        return base + size * lo, base + size * hi
-
-    def _part(self, lo: float, hi: float) -> tuple[float, float]:
-        summary = 1 - EXAM if self.exam else 1.0
-        k = self.part - 1
-        return self._unit(summary * (k + lo) / self.parts, summary * (k + hi) / self.parts)
-
-    def _set(self, span: tuple[float, float], label: str, chapter: bool = False) -> None:
-        self.span, self.t0 = span, time.monotonic()
-        self.label = f"Chapter {self.unit + 1} of {self.units}  ·  {label}" if chapter else label
+    def _global(self, span: tuple[float, float], label: str) -> None:
+        self.span, self.t0, self.label = span, time.monotonic(), label
 
     def feed(self, line: str) -> None:
         s = line.strip()
-        if m := re.match(r"Course: .*units: (\d+)", s):
+        if m := re.match(r"\[(\d+)\] (.*)", s):
+            n = int(m[1])
+            c = self.chapters.setdefault(n, Chapter())
+            if label := c.feed(m[2].strip(), 1 - EXAM if self.exam else 1.0):
+                self.label = f"Chapter {n} of {self.units}  ·  {label}"
+        elif m := re.match(r"Course: .*units: (\d+)", s):
             self.units = max(1, int(m[1]))
         elif s.startswith("[course_context]"):
-            self._set(self.span, "Reading the course")
+            self._global(self.span, "Reading the course")
         elif "no past-exam PDFs were found" in s:
             self.exam = False
         elif s.startswith("[pipeline] Uploading"):
-            self._set(self.span, "Uploading past exams")
-        elif m := re.match(r"\[pipeline\] (Using cached result for|Processing) unit", s):
-            self.unit += 1
-            self.parts, self.part = 1, 1
-            if m[1].startswith("Using"):
-                self._set(self._part(1, 1), "From cache", chapter=True)
+            self._global(self.span, "Uploading past exams")
+        elif s.startswith("Building the PDF"):
+            self._global((1 - PDF, 1.0), "Building the PDF")
+
+    def value(self) -> float:
+        now = time.monotonic()
+        if self.chapters and self.span[0] < 1 - PDF:
+            size = (1 - SETUP - PDF) / self.units
+            total = SETUP + size * sum(c.value(now) for c in self.chapters.values())
+        else:
+            total = _ease(self.span, self.t0, now)
+        self.shown = max(self.shown, min(total, 1.0))
+        return self.shown
+
+
+def _ease(span: tuple[float, float], t0: float, now: float) -> float:
+    lo, hi = span
+    return lo + (hi - lo) * (1 - math.exp(-(now - t0) / TAU))
+
+
+class Chapter:
+    """One chapter's step, as a span of its own 0-1 slice."""
+
+    def __init__(self) -> None:
+        self.parts, self.part, self.first_topic = 1, 1, None
+        self.span, self.t0 = (0.0, 0.0), time.monotonic()
+
+    def _part(self, summary: float, lo: float, hi: float) -> tuple[float, float]:
+        k = self.part - 1
+        return summary * (k + lo) / self.parts, summary * (k + hi) / self.parts
+
+    def feed(self, s: str, summary: float) -> str | None:
+        """Moves to the step `s` starts and returns its label, or None."""
+        span, label = None, None
+        if s.startswith("[pipeline] Using cached result for unit"):
+            span, label = (summary, summary), "From cache"
         elif m := re.match(r"Part (\d+)/(\d+):", s):
             self.part, self.parts, self.first_topic = int(m[1]), int(m[2]), None
-            self._set(self._part(0, 0.15), "Reading the material", chapter=True)
+            span, label = self._part(summary, 0, 0.15), "Reading the material"
         elif s.startswith("Planning content boundaries"):
-            self._set(self._part(0.15, 0.25), "Planning topics", chapter=True)
+            span, label = self._part(summary, 0.15, 0.25), "Planning topics"
         elif m := re.match(r"Writing topics (\d+)-(\d+)/(\d+)", s):
             a, b, last = map(int, m.groups())
             if self.first_topic is None:
                 self.first_topic = a
             n = last - self.first_topic + 1
             lo, hi = (a - self.first_topic) / n, (b - self.first_topic + 1) / n
-            self._set(self._part(0.25 + 0.65 * lo, 0.25 + 0.65 * hi), f"Writing topics {a}–{b}", chapter=True)
+            span, label = self._part(summary, 0.25 + 0.65 * lo, 0.25 + 0.65 * hi), f"Writing topics {a}–{b}"
         elif s.startswith("Writing glossary"):
-            self._set(self._part(0.9, 1), "Writing key terms", chapter=True)
+            span, label = self._part(summary, 0.9, 1), "Writing key terms"
         elif s.startswith("Looking for a past-exam question"):
-            self._set(self._unit(1 - EXAM, 1), "Finding an exam question", chapter=True)
+            span, label = (summary, 1.0), "Finding an exam question"
         elif s.startswith(("Using cached exam question", "No past-exam question")):
-            self.span, self.t0 = self._unit(1, 1), time.monotonic()
-        elif s.startswith("Building the PDF"):
-            self._set((1 - PDF, 1.0), "Building the PDF")
+            span = (1.0, 1.0)
+        if span:
+            self.span, self.t0 = span, time.monotonic()
+        return label
 
-    def value(self) -> float:
-        lo, hi = self.span
-        eased = lo + (hi - lo) * (1 - math.exp(-(time.monotonic() - self.t0) / TAU))
-        self.shown = max(self.shown, eased)
-        return self.shown
+    def value(self, now: float) -> float:
+        return _ease(self.span, self.t0, now)
 
 
 def _style(root: tk.Tk) -> None:

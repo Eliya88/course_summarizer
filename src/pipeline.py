@@ -15,10 +15,12 @@ import hashlib
 import json
 import math
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
 
 from . import claude_client, pdf_utils, prompts
+from .log import log, set_unit
 from .config import CourseConfig, Unit
 from .course_context import build_course_context
 
@@ -31,6 +33,9 @@ SLIDES_PER_TOPIC = 3
 # A slide-less (transcript-only) lecture gets one topic per this many words.
 WORDS_PER_TOPIC = 1500
 SECTION_MAX_OUTPUT_TOKENS = 24000
+# Units summarized at the same time. Rate-limit errors (429) are retried by
+# the SDK; lower this if they keep failing a run.
+UNIT_WORKERS = 4
 
 # Each source PDF is cut into this many page ranges, and each range gets its
 # own chat, so every call covers less material and a small model like
@@ -89,10 +94,10 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
     cache_path = _exam_cache_path(course, unit, exam_fp)
     if use_cache and cache_path.exists():
         cached = json.loads(cache_path.read_text(encoding="utf-8"))["markdown"]
-        print(f"  Using cached exam question for '{unit.name}'")
+        log(f"  Using cached exam question for '{unit.name}'")
         return cached or None
 
-    print(f"  Looking for a past-exam question on '{unit.name}'...")
+    log(f"  Looking for a past-exam question on '{unit.name}'...")
     system_instruction = _system_instruction(course)
     chat = claude_client.start_chat(
         client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
@@ -105,7 +110,7 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
     answer = claude_client.send(chat, [prompt, *exam_files]).strip()
 
     if prompts.EXAM_NO_QUESTION_MARKER in answer:
-        print(f"  No past-exam question matches '{unit.name}' - skipping its practice page")
+        log(f"  No past-exam question matches '{unit.name}' - skipping its practice page")
         block = ""
     else:
         block = "## שאלה ממבחנים קודמים\n\n" + answer
@@ -206,13 +211,13 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
             if later_slides:
                 agenda_prompt += prompts.TRANSCRIPT_LATER_RULE.format(later=later_slides)
     section_titles = _parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files]))
-    print(f"  Agenda: {len(section_titles)} section(s)")
+    log(f"  Agenda: {len(section_titles)} section(s)")
 
     # A book's few broad topics are written in one call, so there are no
     # batches to keep apart and the boundary-planning call is skipped.
     batch_size = len(section_titles) if course.book else SECTION_BATCH_SIZE
     if not course.book:
-        print("  Planning content boundaries...")
+        log("  Planning content boundaries...")
         claude_client.send(chat, [prompts.OUTLINE_PROMPT])
 
     if course.book:
@@ -227,14 +232,14 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
     for batch_start in range(0, len(numbered_titles), batch_size):
         batch = numbered_titles[batch_start:batch_start + batch_size]
         first_i, last_i = batch[0][0], batch[-1][0]
-        print(f"  Writing topics {first_i}-{last_i}/{last_index}: "
+        log(f"  Writing topics {first_i}-{last_i}/{last_index}: "
               f"{', '.join(t for _, t in batch)}")
         topic_list = "\n".join(f"- Topic {i}: {t}" for i, t in batch)
         body = claude_client.send(chat, [prompts.SECTION_PROMPT.format(
             n=len(batch), topic_list=topic_list, length_rule=length_rule)])
         section_bodies.append(_resolve_images(body, part_paths, course.output_dir / "cache" / "images"))
 
-    print("  Writing glossary...")
+    log("  Writing glossary...")
     glossary_prompt = prompts.GLOSSARY_PROMPT
     if covered_terms:
         glossary_prompt += prompts.GLOSSARY_COVERED_RULE.format(terms=", ".join(covered_terms))
@@ -246,14 +251,14 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     """Returns the assembled Markdown for one unit (agenda + sections + glossary)."""
     cache_path = _unit_cache_path(course, unit)
     if use_cache and cache_path.exists():
-        print(f"[pipeline] Using cached result for unit '{unit.name}'")
+        log(f"[pipeline] Using cached result for unit '{unit.name}'")
         return json.loads(cache_path.read_text(encoding="utf-8"))["markdown"]
 
-    print(f"[pipeline] Processing unit '{unit.name}'")
+    log(f"[pipeline] Processing unit '{unit.name}'")
     source_paths = [p for p in unit.source_paths(course) if p.exists()]
     missing = [p for p in unit.source_paths(course) if not p.exists()]
     for m in missing:
-        print(f"  [warn] configured file not found, skipping: {m}")
+        log(f"  [warn] configured file not found, skipping: {m}")
     transcript = unit.transcript_path(course)
     if not source_paths and not transcript:
         raise FileNotFoundError(f"No source PDFs found for unit '{unit.name}'")
@@ -273,7 +278,7 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     for k, part in enumerate(parts, start=1):
         label = unit.name if len(parts) == 1 else f"{unit.name} (part {k}/{len(parts)})"
         names = [p.name for p in part] + ([transcript.name] if transcript else [])
-        print(f"  Part {k}/{len(parts)}: uploading {', '.join(names)} to Claude...")
+        log(f"  Part {k}/{len(parts)}: uploading {', '.join(names)} to Claude...")
         uploaded_files = [claude_client.upload_pdf(client, p) for p in part]
         later_slides = ""
         if transcript_doc:
@@ -320,17 +325,17 @@ def run(course: CourseConfig, use_cache: bool = True, force_context: bool = Fals
     if with_tests:
         exam_paths = course.exam_paths()
         if not exam_paths:
-            print("[pipeline] --with-tests was passed but no past-exam PDFs were found "
+            log("[pipeline] --with-tests was passed but no past-exam PDFs were found "
                   f"({course.exams_dir or 'no exams folder'}) - continuing without exam pages.")
         else:
             exam_fp = _exam_fingerprint(course)
-            print(f"[pipeline] Uploading {len(exam_paths)} past-exam PDF(s) from {course.exams_dir.name}...")
+            log(f"[pipeline] Uploading {len(exam_paths)} past-exam PDF(s) from {course.exams_dir.name}...")
             for p in exam_paths:
-                print(f"  Uploading {p.name}...")
+                log(f"  Uploading {p.name}...")
                 exam_files.append(claude_client.upload_pdf(client, p))
 
-    unit_markdowns = []
-    for unit in course.units:
+    def one_unit(n: int, unit: Unit) -> str:
+        set_unit(n)
         markdown = process_unit(client, course, unit, digest, use_cache=use_cache)
         if exam_files:
             exam_block = generate_exam_block(
@@ -338,7 +343,16 @@ def run(course: CourseConfig, use_cache: bool = True, force_context: bool = Fals
             )
             if exam_block:
                 markdown = markdown + "\n\n" + exam_block
-        unit_markdowns.append(markdown)
+        return markdown
+
+    # Units don't depend on each other, and nearly all the time is spent
+    # waiting on Claude, so several run at once. A failed unit stops the
+    # ones not started yet; the ones running finish and get cached.
+    pool = ThreadPoolExecutor(max_workers=UNIT_WORKERS)
+    try:
+        unit_markdowns = list(pool.map(one_unit, range(1, len(course.units) + 1), course.units))
+    finally:
+        pool.shutdown(cancel_futures=True)
 
     cover = f"# {course.course_name}\n## סיכום קורס\n\n" + "## תוכן עניינים\n\n" + "\n".join(
         f"@@TOC@@ {i}|{u.name}" for i, u in enumerate(course.units, start=1)

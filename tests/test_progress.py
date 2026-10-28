@@ -5,44 +5,43 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import app
 
+# Chapter 1 is cached, chapter 2 runs; their lines interleave.
 RUN = """\
 Course: LLM's  |  model: claude  |  units: 2
-[pipeline] Using cached result for unit 'Intro'
-  Looking for a past-exam question on 'Intro'...
-[pipeline] Processing unit 'Attention'
-  Part 1/2: uploading a.pdf to Claude...
-  Agenda: 6 section(s)
-  Planning content boundaries...
-  Writing topics 1-4/6: x
-  Writing topics 5-6/6: y
-  Writing glossary...
-  Part 2/2: uploading a.pdf to Claude...
-  Planning content boundaries...
-  Writing topics 7-9/9: z
-  Writing glossary...
-  Using cached exam question for 'Attention'
+[2] [pipeline] Processing unit 'Attention'
+[1] [pipeline] Using cached result for unit 'Intro'
+[2]   Part 1/2: uploading a.pdf to Claude...
+[1]   Looking for a past-exam question on 'Intro'...
+[2]   Agenda: 6 section(s)
+[2]   Planning content boundaries...
+[1]   Using cached exam question for 'Intro'
+[2]   Writing topics 1-4/6: x
+[2]   Writing topics 5-6/6: y
+[2]   Writing glossary...
+[2]   Part 2/2: uploading a.pdf to Claude...
+[2]   Planning content boundaries...
+[2]   Writing topics 7-9/9: z
+[2]   Writing glossary...
+[2]   Using cached exam question for 'Attention'
 Building the PDF...
 """.splitlines()
 
 
-def test_steps_only_move_forward_and_stay_in_range():
+def test_bar_only_moves_forward_and_stays_in_range():
     p = app.Progress(with_tests=True)
-    ends = []
+    values = []
     for line in RUN:
         p.feed(line)
-        lo, hi = p.span
-        assert 0 <= lo <= hi <= 1
-        ends.append(hi)
-    assert ends == sorted(ends)
-    # Chapter 1 (cached) ends before its exam slice; the PDF step is last.
-    assert p.span == (1 - app.PDF, 1.0)
+        values.append(p.value())
+    assert values == sorted(values)
+    assert 0 <= values[0] and values[-1] <= 1
     assert p.label == "Building the PDF"
 
 
 def test_cached_chapter_jumps_to_its_summary_end():
     p = app.Progress(with_tests=False)
     p.feed("Course: X  |  model: m  |  units: 4")
-    p.feed("[pipeline] Using cached result for unit 'A'")
+    p.feed("[3] [pipeline] Using cached result for unit 'A'")
     size = (1 - app.SETUP - app.PDF) / 4
-    assert p.span == (app.SETUP + size, app.SETUP + size)
-    assert p.label.startswith("Chapter 1 of 4")
+    assert abs(p.value() - (app.SETUP + size)) < 1e-9
+    assert p.label.startswith("Chapter 3 of 4")
