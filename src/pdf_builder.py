@@ -15,7 +15,7 @@ from __future__ import annotations
 import io
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -138,10 +138,10 @@ def _tokenize_words(text: str, prefix: str = ""):
     call/unit lets the shaping engine keep its internal left-to-right
     order intact. Hebrew words are still split individually, since that's
     what allows the line to wrap at the right spots."""
-    tokens = []
+    # The bullet is its own token, so it stays at the right edge even when
+    # the line starts with an English or math run.
+    tokens = [(prefix.strip(), False)] if prefix.strip() else []
     runs = _split_bold_runs(text) or [(False, "")]
-    is_bold0, content0 = runs[0]
-    runs[0] = (is_bold0, prefix + content0)
     for is_bold, content in runs:
         words = content.split()
         i = 0
@@ -190,15 +190,25 @@ def _plain_math(body: str) -> str:
 
 
 # Drawn in an RTL paragraph, the symbols in a Latin/math run attach to the
-# right-to-left side: "T → ∞" shows as "∞ → T" and "1/T" as "T/1". Left-to-right
-# marks (zero-width, from the Arial fallback) around the run keep its order;
-# a Hebrew prefix ("ב-") and sentence punctuation at the end stay outside them.
-_LTR_RE = re.compile(r"^(.*[֐-׿][-־]?)?(.*?)([.,:;!?]*)$", re.S)
+# right-to-left side: "T → ∞" shows as "∞ → T" and "1/T" as "T/1". So each
+# such run is drawn as its own left-to-right cell. (Left-to-right marks would
+# do it in one cell, but they come from the Arial fallback, and fpdf then
+# garbles the glyphs of the line.) A Hebrew prefix ("ב-") and sentence
+# punctuation at the end stay in the right-to-left pieces.
+_LTR_RUN_RE = re.compile(r"([^\s֐-׿\-־][^֐-׿]*?)(?=[.,:;!?]*\s*(?:[֐-׿]|$))")
 
 
-def _ltr(word: str) -> str:
-    head, core, tail = _LTR_RE.match(word).groups()
-    return word if not re.search(r"[A-Za-z0-9]", core) else f"{head or ''}‎{core}‎{tail}"
+def _bidi_pieces(word: str) -> List[Tuple[str, bool]]:
+    """(text, is_ltr) pieces of a word in reading order."""
+    parts = _LTR_RUN_RE.split(word)
+    return [(p, i % 2 == 1 and bool(re.search(r"[A-Za-z0-9]", p))) for i, p in enumerate(parts) if p]
+
+
+def _shaping(pdf: FPDF, ltr: bool) -> None:
+    if ltr:
+        pdf.set_text_shaping(use_shaping_engine=True, direction="ltr", script="latn", language="en")
+    else:
+        pdf.set_text_shaping(use_shaping_engine=True, direction="rtl", script="hebr", language="he")
 
 
 def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
@@ -273,9 +283,14 @@ def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
         x = right_edge
         for word, is_bold, ww in line:
             x -= ww
-            pdf.set_xy(x, y)
-            pdf.set_font(FONT_FAMILY, style="B" if is_bold else "", size=size)
-            pdf.cell(w=ww, h=h, text=_ltr(word))
+            px = x + ww
+            for piece, ltr in _bidi_pieces(word):
+                pw = word_width(piece, is_bold)
+                px -= pw
+                pdf.set_xy(px, y)
+                _shaping(pdf, ltr)
+                pdf.cell(w=pw, h=h, text=piece)
+            _shaping(pdf, False)
             x -= space_w
         if link is not None:
             # x sits one space to the left of the last word drawn, so the

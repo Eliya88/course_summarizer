@@ -120,14 +120,12 @@ def test_inline_latex_becomes_plain_text():
     assert plain(code) == code
 
 
-def test_latin_and_math_runs_keep_their_order_in_rtl():
-    from fpdf.bidi import BidiParagraph
-    def shown(s):
-        return "".join(f if isinstance(f, str) else "".join(f.characters) for f in
-                       BidiParagraph(text=pdf_builder._ltr(s), base_direction="R").get_reordered_string()).replace("‎", "")
-    assert shown("T → ∞") == "T → ∞"
-    assert shown("1/T") == "1/T"
-    assert shown("[1, ∞)") == "[1, ∞)"
-    assert shown("0 < k < 1") == "0 < k < 1"
-    assert shown("Models:") == ":Models"  # the colon still ends the term, right to left
-    assert pdf_builder._ltr("שלום,") == "שלום,"
+def test_latin_and_math_runs_are_drawn_left_to_right():
+    p = pdf_builder._bidi_pieces
+    assert p("T → ∞") == [("T → ∞", True)]
+    assert p("0 < k < 1") == [("0 < k < 1", True)]
+    assert p("T = 1.5 ו-T = 2") == [("T = 1.5", True), (" ו-", False), ("T = 2", True)]
+    assert p("מ-1.") == [("מ-", False), ("1", True), (".", False)]
+    assert p("Models:") == [("Models", True), (":", False)]  # the colon stays on the RTL side
+    assert p("שלום,") == [("שלום", False), (",", False)]
+    assert pdf_builder._tokenize_words("**T → ∞**: טקסט", prefix="• ")[:2] == [("•", False), ("T → ∞:", True)]
