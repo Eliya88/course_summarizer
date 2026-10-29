@@ -15,7 +15,7 @@ from __future__ import annotations
 import io
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -26,6 +26,9 @@ from PIL import Image
 
 FONT_FAMILY = "PlaypenHebrew"
 FONT_PATH = Path(__file__).parent.parent / "assets" / "fonts" / "PlaypenSansHebrew.ttf"
+FALLBACK_FAMILY = "Fallback"
+FALLBACK_FONT_PATH = Path("C:/Windows/Fonts/arial.ttf")
+FALLBACK_BOLD_PATH = Path("C:/Windows/Fonts/arialbd.ttf")
 
 INK_COLOR = (43, 38, 38)          # body text - warm near-black
 HEADING_COLOR = (172, 74, 39)     # burnt-orange marker color for headings
@@ -89,6 +92,11 @@ class NotebookPDF(FPDF):
 def _register_font(pdf: FPDF) -> None:
     pdf.add_font(FONT_FAMILY, style="", fname=str(FONT_PATH), variations={"wght": 420})
     pdf.add_font(FONT_FAMILY, style="B", fname=str(FONT_PATH), variations={"wght": 750})
+    # Playpen has no Greek, so Greek words fall back to Arial where Windows has it.
+    if FALLBACK_FONT_PATH.exists() and FALLBACK_BOLD_PATH.exists():
+        pdf.add_font(FALLBACK_FAMILY, style="", fname=str(FALLBACK_FONT_PATH))
+        pdf.add_font(FALLBACK_FAMILY, style="B", fname=str(FALLBACK_BOLD_PATH))
+        pdf.set_fallback_fonts([FALLBACK_FAMILY])
 
 
 _BOLD_TOKEN_RE = re.compile(r"(\*\*.+?\*\*)", re.S)
@@ -114,6 +122,7 @@ def _split_bold_runs(text: str):
 
 
 _HEBREW_RE = re.compile(r"[֐-׿]")
+_LATIN_TAIL_RE = re.compile(r"[A-Za-z][^֐-׿]*$")
 
 
 def _tokenize_words(text: str, prefix: str = ""):
@@ -129,17 +138,24 @@ def _tokenize_words(text: str, prefix: str = ""):
     call/unit lets the shaping engine keep its internal left-to-right
     order intact. Hebrew words are still split individually, since that's
     what allows the line to wrap at the right spots."""
-    tokens = []
+    # The bullet is its own token, so it stays at the right edge even when
+    # the line starts with an English or math run.
+    tokens = [(prefix.strip(), False)] if prefix.strip() else []
     runs = _split_bold_runs(text) or [(False, "")]
-    is_bold0, content0 = runs[0]
-    runs[0] = (is_bold0, prefix + content0)
     for is_bold, content in runs:
         words = content.split()
         i = 0
         while i < len(words):
             if _HEBREW_RE.search(words[i]):
-                tokens.append((words[i], is_bold))
-                i += 1
+                # A Hebrew prefix glued to English ("ו-Language Models") keeps
+                # the English words after it in the same chunk; split apart,
+                # they would be placed right-to-left and swap places.
+                j = i + 1
+                if _LATIN_TAIL_RE.search(words[i]):
+                    while j < len(words) and not _HEBREW_RE.search(words[j]):
+                        j += 1
+                tokens.append((" ".join(words[i:j]), is_bold))
+                i = j
             else:
                 j = i
                 while j < len(words) and not _HEBREW_RE.search(words[j]):
@@ -147,6 +163,52 @@ def _tokenize_words(text: str, prefix: str = ""):
                 tokens.append((" ".join(words[i:j]), is_bold))
                 i = j
     return tokens
+
+
+# The prompt asks for plain text inside sentences, but the model still writes
+# inline "$1/T$" at times; only "@@F@@" lines are typeset, so the rest is
+# turned into plain characters. Quotes and backticks rule out "$1 billion".
+_INLINE_MATH_RE = re.compile(r"\${1,2}(?!\s)([^$\n'\"`]+?)(?<!\s)\${1,2}")
+_TEX_WORDS = {
+    **dict(zip("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi pi rho sigma tau "
+               "phi chi psi omega Gamma Delta Theta Lambda Pi Sigma Phi Omega".split(), "αβγδεζηθικλμνξπρστφχψωΓΔΘΛΠΣΦΩ")),
+    "ldots": "…", "cdots": "…", "dots": "…", "mid": "|", "cdot": "·", "times": "×", "infty": "∞",
+    "leq": "≤", "le": "≤", "geq": "≥", "ge": "≥", "neq": "≠", "ne": "≠", "approx": "≈", "sum": "∑",
+    "prod": "∏", "sqrt": "√", "to": "→", "rightarrow": "→", "in": " in ",  # no ∈ in either font
+    "left": "", "right": "", ",": " ", ";": " ", "!": "", "quad": " ",
+}
+
+
+def _plain_math(body: str) -> str:
+    """Inline LaTeX as plain text: "\\frac{a}{b}" -> "a/b", "x_{t-1}" -> "x_(t-1)", "\\lambda" -> "λ"."""
+    body = re.sub(r"\\frac\{([^{}]*)\}\{([^{}]*)\}",
+                  lambda m: "/".join(p if len(p) == 1 else f"({p})" for p in m.groups()), body)
+    body = re.sub(r"\\(?:mathrm|text|mathbf|mathit|operatorname)\{([^{}]*)\}", r"\1", body)
+    body = re.sub(r"\\([A-Za-z]+|[,;!])", lambda m: _TEX_WORDS.get(m[1], m[1]), body)
+    body = re.sub(r"([_^])\{([^{}]*)\}", lambda m: m[1] + (m[2] if len(m[2]) == 1 else f"({m[2]})"), body)
+    return re.sub(r"\s+", " ", body.replace("{", "").replace("}", "")).strip()
+
+
+# Drawn in an RTL paragraph, the symbols in a Latin/math run attach to the
+# right-to-left side: "T → ∞" shows as "∞ → T" and "1/T" as "T/1". So each
+# such run is drawn as its own left-to-right cell. (Left-to-right marks would
+# do it in one cell, but they come from the Arial fallback, and fpdf then
+# garbles the glyphs of the line.) A Hebrew prefix ("ב-") and sentence
+# punctuation at the end stay in the right-to-left pieces.
+_LTR_RUN_RE = re.compile(r"([^\s֐-׿\-־][^֐-׿]*?)(?=[.,:;!?]*\s*(?:[֐-׿]|$))")
+
+
+def _bidi_pieces(word: str) -> List[Tuple[str, bool]]:
+    """(text, is_ltr) pieces of a word in reading order."""
+    parts = _LTR_RUN_RE.split(word)
+    return [(p, i % 2 == 1 and bool(re.search(r"[A-Za-z0-9]", p))) for i, p in enumerate(parts) if p]
+
+
+def _shaping(pdf: FPDF, ltr: bool) -> None:
+    if ltr:
+        pdf.set_text_shaping(use_shaping_engine=True, direction="ltr", script="latn", language="en")
+    else:
+        pdf.set_text_shaping(use_shaping_engine=True, direction="rtl", script="hebr", language="he")
 
 
 def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
@@ -172,16 +234,33 @@ def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
     gets a clickable rectangle covering exactly the text it drew.
     """
     h = size * 0.6
+    text = _INLINE_MATH_RE.sub(lambda m: _plain_math(m[1]), text)
 
     def word_width(word: str, bold: bool) -> float:
         pdf.set_font(FONT_FAMILY, style="B" if bold else "", size=size)
         return pdf.get_string_width(word)
 
-    words = _tokenize_words(text, prefix=prefix)
-    space_w = word_width(" ", False)
-
     right_edge = pdf.w - pdf.r_margin
     max_w = right_edge - pdf.l_margin
+
+    def fit_pieces(chunk: str, bold: bool) -> List[str]:
+        """A non-Hebrew chunk wider than a whole line (a long English
+        quote) is cut at spaces into pieces that each fit, so it wraps
+        instead of running off the page."""
+        pieces, cur = [], ""
+        for w in chunk.split(" "):
+            cand = f"{cur} {w}" if cur else w
+            if cur and word_width(cand, bold) > max_w:
+                pieces.append(cur)
+                cur = w
+            else:
+                cur = cand
+        return pieces + [cur]
+
+    # ponytail: a single space-less word wider than the line (a long URL) still overflows.
+    words = [(piece, b) for w, b in _tokenize_words(text, prefix=prefix)
+             for piece in (fit_pieces(w, b) if word_width(w, b) > max_w else [w])]
+    space_w = word_width(" ", False)
 
     lines, cur_line, cur_w = [], [], 0.0
     for word, is_bold in words:
@@ -204,9 +283,14 @@ def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
         x = right_edge
         for word, is_bold, ww in line:
             x -= ww
-            pdf.set_xy(x, y)
-            pdf.set_font(FONT_FAMILY, style="B" if is_bold else "", size=size)
-            pdf.cell(w=ww, h=h, text=word)
+            px = x + ww
+            for piece, ltr in _bidi_pieces(word):
+                pw = word_width(piece, is_bold)
+                px -= pw
+                pdf.set_xy(px, y)
+                _shaping(pdf, ltr)
+                pdf.cell(w=pw, h=h, text=piece)
+            _shaping(pdf, False)
             x -= space_w
         if link is not None:
             # x sits one space to the left of the last word drawn, so the
@@ -222,7 +306,6 @@ _MATH_DPI = 300        # raster quality only; physical size is derived from this
 # Common LaTeX the model writes that mathtext doesn't know, rewritten to an
 # equivalent it does. \big( etc. only size a delimiter, so dropping the
 # command keeps the delimiter itself.
-# ponytail: \begin{cases} has no mathtext equivalent and still falls back to text.
 _MATHTEXT_FIXES = [
     (re.compile(r"\\[Bb]igg?[lr]?(?![a-zA-Z])"), ""),
     (re.compile(r"\\iff(?![a-zA-Z])"), r"\\Leftrightarrow"),
@@ -235,6 +318,20 @@ def _to_mathtext(latex_body: str) -> str:
     for pattern, repl in _MATHTEXT_FIXES:
         latex_body = pattern.sub(repl, latex_body)
     return latex_body
+
+
+def _split_cases(latex_body: str) -> List[str]:
+    """mathtext has no \\begin{cases}, so "f = \\begin{cases} a & c_1 \\\\ b & c_2 \\end{cases}"
+    becomes one formula per case: "f = a \\quad c_1" and "f = b \\quad c_2"."""
+    m = re.search(r"\\begin\{cases\}(.*?)\\end\{cases\}", latex_body, re.S)
+    if not m:
+        return [latex_body]
+    head, tail = latex_body[:m.start()], latex_body[m.end():]
+    rows = []
+    for row in filter(str.strip, re.split(r"\\\\", m[1])):
+        value, _, cond = row.partition("&")
+        rows.append(head + value.strip() + (rf" \quad {cond.strip()}" if cond.strip() else "") + tail)
+    return rows
 
 
 def _render_math_image(latex_body: str) -> Optional[io.BytesIO]:
@@ -279,6 +376,8 @@ def _write_formula_text_fallback(pdf: FPDF, text: str, size: float = 12.0) -> No
         w=box_w - 2 * pad_x, h=h, text=text, markdown=True, align="C",
         dry_run=True, output=MethodReturnValue.HEIGHT,
     )
+    if pdf.get_y() + height_used + 2 * pad_y > pdf.page_break_trigger:
+        pdf.add_page()
     box_y = pdf.get_y()
 
     pdf.set_draw_color(*HEADING_COLOR)
@@ -298,6 +397,11 @@ def _write_formula(pdf: FPDF, text: str, top_gap: float = 4.0) -> None:
     matplotlib's mathtext, see _render_math_image), boxed like a callout
     equation in a textbook. Falls back to the old plain-text box if the
     text doesn't parse as math."""
+    cases = _split_cases(text)
+    if len(cases) > 1:
+        for i, row in enumerate(cases):
+            _write_formula(pdf, row, top_gap if i == 0 else 1.0)
+        return
     pdf.ln(top_gap)
 
     img_buf = _render_math_image(text)
@@ -407,8 +511,8 @@ def _write_heading(pdf: FPDF, text: str, level: int) -> None:
     if is_subject_heading and pdf.page_dirty:
         pdf.add_page()
 
-    sizes = {1: 24, 2: 17, 3: 13.5}
-    gaps = {1: 4, 2: 8, 3: 6}
+    sizes = {1: 24, 2: 17, 3: 13.5, 4: 12}
+    gaps = {1: 4, 2: 8, 3: 6, 4: 4}
     pdf.ln(0 if is_subject_heading and not pdf.page_dirty else gaps[level])
     pdf.set_font(FONT_FAMILY, style="B", size=sizes[level])
     pdf.set_text_color(*HEADING_COLOR)
@@ -423,16 +527,23 @@ def _write_heading(pdf: FPDF, text: str, level: int) -> None:
 
 
 _LIST_RE = re.compile(r"^\s*(?:[-*]|\d+[\.\)])\s+(.*)$")
-_HEADING_RE = re.compile(r"^(#{1,3})(?:\s+(.*))?$")
+_HEADING_RE = re.compile(r"^(#{1,6})(?:\s+(.*))?$")
 _FORMULA_RE = re.compile(r"^@@F@@\s*(.*)$")
 # Slide figure, already resolved to a local file by the pipeline: "@@IMG@@ C:\...\deck_p7.jpg".
 _IMG_RE = re.compile(r"^@@IMG@@\s*(.+)$")
 # Cover-page table-of-contents entry: "@@TOC@@ 3|Corpus Linguistics".
 _TOC_RE = re.compile(r"^@@TOC@@\s*(\d+)\|(.*)$")
+# A chapter's numbered topic list ("3. title" under "## נושאים:") and the
+# "### 3. title" heading each item jumps to.
+_NUMBERED_RE = re.compile(r"^(\d+)[\.\)]\s+(.*)$")
+_TOPICS_HEADING = "נושאים"
 
 
 def _render_section(pdf: FPDF, section_md: str,
                     chapter_links: Optional[List[int]] = None) -> None:
+    # Topic links are seeded at page 1 and retargeted when their heading is
+    # drawn, the same way chapter links are (see build_pdf).
+    topic_links, in_topics = {}, False
     for raw_line in section_md.splitlines():
         line = raw_line.rstrip()
         if not line.strip():
@@ -462,7 +573,20 @@ def _render_section(pdf: FPDF, section_md: str,
             # An empty "### " the model sometimes leaves behind would draw a blank subject page.
             title = (heading_match.group(2) or "").strip()
             if title:
-                _write_heading(pdf, title, len(heading_match.group(1)))
+                # "####" and deeper, which the model sometimes uses inside a topic, render as one sub-heading level.
+                level = min(len(heading_match.group(1)), 4)
+                in_topics = level == 2 and title.rstrip(":").strip() == _TOPICS_HEADING
+                _write_heading(pdf, title, level)
+                numbered = _NUMBERED_RE.match(title)
+                if level == 3 and numbered and numbered.group(1) in topic_links:
+                    pdf.set_link(topic_links.pop(numbered.group(1)), page=pdf.page_no(), y=0)
+            continue
+
+        topic_match = _NUMBERED_RE.match(line.strip()) if in_topics else None
+        if topic_match:
+            number = topic_match.group(1)
+            topic_links[number] = pdf.add_link(page=1)
+            _write_toc_item(pdf, int(number), topic_match.group(2).strip(), topic_links[number])
             continue
 
         list_match = _LIST_RE.match(line)
