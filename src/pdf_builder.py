@@ -306,7 +306,6 @@ _MATH_DPI = 300        # raster quality only; physical size is derived from this
 # Common LaTeX the model writes that mathtext doesn't know, rewritten to an
 # equivalent it does. \big( etc. only size a delimiter, so dropping the
 # command keeps the delimiter itself.
-# ponytail: \begin{cases} has no mathtext equivalent and still falls back to text.
 _MATHTEXT_FIXES = [
     (re.compile(r"\\[Bb]igg?[lr]?(?![a-zA-Z])"), ""),
     (re.compile(r"\\iff(?![a-zA-Z])"), r"\\Leftrightarrow"),
@@ -319,6 +318,20 @@ def _to_mathtext(latex_body: str) -> str:
     for pattern, repl in _MATHTEXT_FIXES:
         latex_body = pattern.sub(repl, latex_body)
     return latex_body
+
+
+def _split_cases(latex_body: str) -> List[str]:
+    """mathtext has no \\begin{cases}, so "f = \\begin{cases} a & c_1 \\\\ b & c_2 \\end{cases}"
+    becomes one formula per case: "f = a \\quad c_1" and "f = b \\quad c_2"."""
+    m = re.search(r"\\begin\{cases\}(.*?)\\end\{cases\}", latex_body, re.S)
+    if not m:
+        return [latex_body]
+    head, tail = latex_body[:m.start()], latex_body[m.end():]
+    rows = []
+    for row in filter(str.strip, re.split(r"\\\\", m[1])):
+        value, _, cond = row.partition("&")
+        rows.append(head + value.strip() + (rf" \quad {cond.strip()}" if cond.strip() else "") + tail)
+    return rows
 
 
 def _render_math_image(latex_body: str) -> Optional[io.BytesIO]:
@@ -363,6 +376,8 @@ def _write_formula_text_fallback(pdf: FPDF, text: str, size: float = 12.0) -> No
         w=box_w - 2 * pad_x, h=h, text=text, markdown=True, align="C",
         dry_run=True, output=MethodReturnValue.HEIGHT,
     )
+    if pdf.get_y() + height_used + 2 * pad_y > pdf.page_break_trigger:
+        pdf.add_page()
     box_y = pdf.get_y()
 
     pdf.set_draw_color(*HEADING_COLOR)
@@ -382,6 +397,11 @@ def _write_formula(pdf: FPDF, text: str, top_gap: float = 4.0) -> None:
     matplotlib's mathtext, see _render_math_image), boxed like a callout
     equation in a textbook. Falls back to the old plain-text box if the
     text doesn't parse as math."""
+    cases = _split_cases(text)
+    if len(cases) > 1:
+        for i, row in enumerate(cases):
+            _write_formula(pdf, row, top_gap if i == 0 else 1.0)
+        return
     pdf.ln(top_gap)
 
     img_buf = _render_math_image(text)

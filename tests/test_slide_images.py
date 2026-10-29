@@ -129,3 +129,10 @@ def test_latin_and_math_runs_are_drawn_left_to_right():
     assert p("Models:") == [("Models", True), (":", False)]  # the colon stays on the RTL side
     assert p("שלום,") == [("שלום", False), (",", False)]
     assert pdf_builder._tokenize_words("**T → ∞**: טקסט", prefix="• ")[:2] == [("•", False), ("T → ∞:", True)]
+
+
+def test_cases_formula_becomes_one_formula_per_case():
+    rows = pdf_builder._split_cases(r"f(x) = \begin{cases} 1 & \text{if } x > 0 \\ 0 & \text{otherwise} \end{cases}")
+    assert rows == [r"f(x) = 1 \quad \text{if } x > 0", r"f(x) = 0 \quad \text{otherwise}"]
+    assert all(pdf_builder._render_math_image(r) for r in rows)
+    assert pdf_builder._split_cases("a + b") == ["a + b"]
