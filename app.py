@@ -248,6 +248,7 @@ class App(tk.Tk):
         courses = ttk.Combobox(row, textvariable=self.course_dir)
         courses.configure(postcommand=lambda: courses.configure(values=self._courses()))
         courses.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        ttk.Button(row, text="Check folders", command=self._check_folders).pack(side="left", padx=(8, 0))
 
         self.book_panel = ttk.Frame(source)
         ttk.Label(self.book_panel, text="BOOK PDF", style="Field.TLabel").pack(anchor="w")
@@ -336,6 +337,20 @@ class App(tk.Tk):
 
     def _prefix(self) -> str:
         return os.path.normpath(self.base.get()).rstrip("\\") + "\\" if self.base.get() else ""
+
+    def _check_folders(self) -> None:
+        from src.config import ensure_course_folders
+        name = self.course_dir.get().strip()
+        if not self.base.get() or not name:
+            messagebox.showerror("Course Summarizer", "Choose the base folder and a course name first.")
+            return
+        course = Path(self.base.get()) / name
+        if not course.is_dir() and not messagebox.askyesno("Course Summarizer", f"Create the course folder?\n{course}"):
+            return
+        course.mkdir(parents=True, exist_ok=True)
+        made = ensure_course_folders(course)
+        messagebox.showinfo("Course Summarizer", "Created:\n" + "\n".join(str(d.relative_to(course)) for d in made)
+                            if made else "All folders are in place.")
 
     def _courses(self) -> list[str]:
         try:

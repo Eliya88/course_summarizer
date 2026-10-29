@@ -165,6 +165,42 @@ def _tokenize_words(text: str, prefix: str = ""):
     return tokens
 
 
+# The prompt asks for plain text inside sentences, but the model still writes
+# inline "$1/T$" at times; only "@@F@@" lines are typeset, so the rest is
+# turned into plain characters. Quotes and backticks rule out "$1 billion".
+_INLINE_MATH_RE = re.compile(r"\${1,2}(?!\s)([^$\n'\"`]+?)(?<!\s)\${1,2}")
+_TEX_WORDS = {
+    **dict(zip("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi pi rho sigma tau "
+               "phi chi psi omega Gamma Delta Theta Lambda Pi Sigma Phi Omega".split(), "αβγδεζηθικλμνξπρστφχψωΓΔΘΛΠΣΦΩ")),
+    "ldots": "…", "cdots": "…", "dots": "…", "mid": "|", "cdot": "·", "times": "×", "infty": "∞",
+    "leq": "≤", "le": "≤", "geq": "≥", "ge": "≥", "neq": "≠", "ne": "≠", "approx": "≈", "sum": "∑",
+    "prod": "∏", "sqrt": "√", "to": "→", "rightarrow": "→", "in": " in ",  # no ∈ in either font
+    "left": "", "right": "", ",": " ", ";": " ", "!": "", "quad": " ",
+}
+
+
+def _plain_math(body: str) -> str:
+    """Inline LaTeX as plain text: "\\frac{a}{b}" -> "a/b", "x_{t-1}" -> "x_(t-1)", "\\lambda" -> "λ"."""
+    body = re.sub(r"\\frac\{([^{}]*)\}\{([^{}]*)\}",
+                  lambda m: "/".join(p if len(p) == 1 else f"({p})" for p in m.groups()), body)
+    body = re.sub(r"\\(?:mathrm|text|mathbf|mathit|operatorname)\{([^{}]*)\}", r"\1", body)
+    body = re.sub(r"\\([A-Za-z]+|[,;!])", lambda m: _TEX_WORDS.get(m[1], m[1]), body)
+    body = re.sub(r"([_^])\{([^{}]*)\}", lambda m: m[1] + (m[2] if len(m[2]) == 1 else f"({m[2]})"), body)
+    return re.sub(r"\s+", " ", body.replace("{", "").replace("}", "")).strip()
+
+
+# Drawn in an RTL paragraph, the symbols in a Latin/math run attach to the
+# right-to-left side: "T → ∞" shows as "∞ → T" and "1/T" as "T/1". Left-to-right
+# marks (zero-width, from the Arial fallback) around the run keep its order;
+# a Hebrew prefix ("ב-") and sentence punctuation at the end stay outside them.
+_LTR_RE = re.compile(r"^(.*[֐-׿][-־]?)?(.*?)([.,:;!?]*)$", re.S)
+
+
+def _ltr(word: str) -> str:
+    head, core, tail = _LTR_RE.match(word).groups()
+    return word if not re.search(r"[A-Za-z0-9]", core) else f"{head or ''}‎{core}‎{tail}"
+
+
 def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
                     link: Optional[int] = None) -> None:
     """Renders one right-aligned RTL paragraph with correct bold/regular
@@ -188,6 +224,7 @@ def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
     gets a clickable rectangle covering exactly the text it drew.
     """
     h = size * 0.6
+    text = _INLINE_MATH_RE.sub(lambda m: _plain_math(m[1]), text)
 
     def word_width(word: str, bold: bool) -> float:
         pdf.set_font(FONT_FAMILY, style="B" if bold else "", size=size)
@@ -238,7 +275,7 @@ def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
             x -= ww
             pdf.set_xy(x, y)
             pdf.set_font(FONT_FAMILY, style="B" if is_bold else "", size=size)
-            pdf.cell(w=ww, h=h, text=word)
+            pdf.cell(w=ww, h=h, text=_ltr(word))
             x -= space_w
         if link is not None:
             # x sits one space to the left of the last word drawn, so the
@@ -439,8 +476,8 @@ def _write_heading(pdf: FPDF, text: str, level: int) -> None:
     if is_subject_heading and pdf.page_dirty:
         pdf.add_page()
 
-    sizes = {1: 24, 2: 17, 3: 13.5}
-    gaps = {1: 4, 2: 8, 3: 6}
+    sizes = {1: 24, 2: 17, 3: 13.5, 4: 12}
+    gaps = {1: 4, 2: 8, 3: 6, 4: 4}
     pdf.ln(0 if is_subject_heading and not pdf.page_dirty else gaps[level])
     pdf.set_font(FONT_FAMILY, style="B", size=sizes[level])
     pdf.set_text_color(*HEADING_COLOR)
@@ -455,7 +492,7 @@ def _write_heading(pdf: FPDF, text: str, level: int) -> None:
 
 
 _LIST_RE = re.compile(r"^\s*(?:[-*]|\d+[\.\)])\s+(.*)$")
-_HEADING_RE = re.compile(r"^(#{1,3})(?:\s+(.*))?$")
+_HEADING_RE = re.compile(r"^(#{1,6})(?:\s+(.*))?$")
 _FORMULA_RE = re.compile(r"^@@F@@\s*(.*)$")
 # Slide figure, already resolved to a local file by the pipeline: "@@IMG@@ C:\...\deck_p7.jpg".
 _IMG_RE = re.compile(r"^@@IMG@@\s*(.+)$")
@@ -501,7 +538,8 @@ def _render_section(pdf: FPDF, section_md: str,
             # An empty "### " the model sometimes leaves behind would draw a blank subject page.
             title = (heading_match.group(2) or "").strip()
             if title:
-                level = len(heading_match.group(1))
+                # "####" and deeper, which the model sometimes uses inside a topic, render as one sub-heading level.
+                level = min(len(heading_match.group(1)), 4)
                 in_topics = level == 2 and title.rstrip(":").strip() == _TOPICS_HEADING
                 _write_heading(pdf, title, level)
                 numbered = _NUMBERED_RE.match(title)

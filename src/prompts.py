@@ -10,7 +10,7 @@ PROMPT_VERSION = "v14-figures-and-lists"
 BOOK_PROMPT_VERSION = "b3-question-refs"
 # Same idea for the transcript-only prompts: folded only into the keys of
 # units that have a lecture transcript.
-TRANSCRIPT_PROMPT_VERSION = "t3-later-slides"
+TRANSCRIPT_PROMPT_VERSION = "t4-beyond-slides"
 # Bumped on its own for units with a transcript and no slides.
 TRANSCRIPT_ONLY_PROMPT_VERSION = "to1-no-digest-content"
 
@@ -127,7 +127,9 @@ the transcript or write that the lecturer said something - teach the content in 
 
 TRANSCRIPT_NOTE = """
 - A plain-text transcript of the recorded lecture is attached next to the slides. Use it to add what the \
-lecturer explained, the examples they gave and the points they stressed that the slides leave out. The \
+lecturer explained, the examples they gave and the points they stressed that the slides leave out. When \
+the lecturer takes a slide's subject further than the slide does - more methods, variants, parameters or \
+formulas - teach all of it in that slide's topic, as fully as the slide's own content. The \
 slides and the course digest stay the authority on terms, names and spelling - where the transcript \
 garbles a term, write it as they spell it. The transcript covers the whole lecture while the attached \
 slides may be only part of the deck: use only the passages about the material on these slides.""" + TRANSCRIPT_NOISE
@@ -158,9 +160,11 @@ TRANSCRIPT_ONLY_AGENDA_RULE = ("\n\nUse at most {max_topics} topics, in the orde
                                "Group consecutive talk on the same theme under one topic, and leave out small "
                                "talk and course logistics. This is a ceiling, not a target: use fewer topics "
                                "when the lecture is simple.")
-TRANSCRIPT_LENGTH_RULE = ("Keep each topic tight: aim for roughly twice the length of its slide text, using the "
-                          "extra room for what the transcript adds, and never pad with restatements or "
-                          "summaries of what you just said.")
+# Sized by the transcript too: a short slide the lecturer talked over at
+# length (temperature, top-k, top-p under "Decoding Strategies") needs the room.
+TRANSCRIPT_LENGTH_RULE = ("Keep each topic tight: aim for roughly 1.5 times the length of its slide text plus "
+                          "about a quarter of the length of the transcript passages about it, and never pad "
+                          "with restatements or summaries of what you just said.")
 TRANSCRIPT_ONLY_LENGTH_RULE = ("Keep each topic tight: aim for about a quarter of the length of the transcript "
                                "passages it covers, and never pad with restatements or summaries of what you "
                                "just said.")

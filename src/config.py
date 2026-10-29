@@ -271,6 +271,20 @@ def attach_transcripts(course: CourseConfig) -> int:
     return len(texts)
 
 
+def ensure_course_folders(course_dir: Path) -> List[Path]:
+    """Creates Lectures and Recordings/Transcripts under course_dir unless a
+    folder the pipeline recognizes (any spelling above) is already there.
+    Returns the folders it created."""
+    created = []
+    if not _find_subdir(course_dir, _LECTURE_DIR_NAMES):
+        created.append(course_dir / "Lectures")
+    if not any(d.is_dir() and d.name.lower() in _TRANSCRIPT_DIR_NAMES for d in course_dir.rglob("*")):
+        created.append(course_dir / "Recordings" / "Transcripts")
+    for d in created:
+        d.mkdir(parents=True)
+    return created
+
+
 def parse_chapters(spec: str) -> List[int]:
     """'1-5,7' -> [1, 2, 3, 4, 5, 7]."""
     chapters = []

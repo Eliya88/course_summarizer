@@ -226,3 +226,13 @@ def test_run_overlaps_units_and_keeps_their_order(monkeypatch, capsys):
     assert pipeline.run(course)[1:] == ["A", "B", "C"]
     lines = capsys.readouterr().out.splitlines()
     assert sorted(lines) == ["[1] start A", "[2] start B", "[3] start C"]
+
+
+def test_ensure_course_folders_creates_only_what_is_missing(tmp_path):
+    from src.config import ensure_course_folders
+    assert ensure_course_folders(tmp_path) == [tmp_path / "Lectures", tmp_path / "Recordings" / "Transcripts"]
+    assert ensure_course_folders(tmp_path) == []
+    other = tmp_path / "other"
+    (other / "slides").mkdir(parents=True)
+    (other / "Audio" / "תמלול").mkdir(parents=True)
+    assert ensure_course_folders(other) == []

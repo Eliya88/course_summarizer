@@ -60,6 +60,14 @@ def test_empty_heading_is_skipped(monkeypatch):
     assert headings == ["2. Real"]
 
 
+def test_deep_heading_is_a_sub_heading_not_text(monkeypatch):
+    seen = []
+    monkeypatch.setattr(pdf_builder, "_write_heading", lambda pdf, text, level: seen.append((text, level)))
+    monkeypatch.setattr(pdf_builder, "_write_paragraph", lambda pdf, text: seen.append("para:" + text))
+    pdf_builder._render_section(None, "#### Word2Vec\n##### CBOW")
+    assert seen == [("Word2Vec", 4), ("CBOW", 4)]
+
+
 def test_unsupported_latex_is_rewritten_for_mathtext():
     import matplotlib
     from matplotlib.mathtext import MathTextParser
@@ -101,3 +109,25 @@ def test_chapter_topic_list_links_to_each_topic(tmp_path):
     # Page 2 is the chapter page with the topic list; topics start pages 3 and 4.
     targets = [page_of[a.get_object()["/Dest"][0].idnum] for a in reader.pages[1]["/Annots"]]
     assert targets == [2, 3]
+
+
+def test_inline_latex_becomes_plain_text():
+    plain = lambda s: pdf_builder._INLINE_MATH_RE.sub(lambda m: pdf_builder._plain_math(m[1]), s)
+    assert plain("טמפרטורה $T > 0$ בחזקה $1/T$") == "טמפרטורה T > 0 בחזקה 1/T"
+    assert plain(r"רצף $x_1, \ldots, x_{t-1}$ ו-$\frac{1}{|V|}$") == "רצף x_1, …, x_(t-1) ו-1/(|V|)"
+    assert plain(r"$P_{\mathrm{LM}}(W)$ עם $\lambda$") == "P_(LM)(W) עם λ"
+    code = "'for', '$', '1' ... for $1 billion"
+    assert plain(code) == code
+
+
+def test_latin_and_math_runs_keep_their_order_in_rtl():
+    from fpdf.bidi import BidiParagraph
+    def shown(s):
+        return "".join(f if isinstance(f, str) else "".join(f.characters) for f in
+                       BidiParagraph(text=pdf_builder._ltr(s), base_direction="R").get_reordered_string()).replace("‎", "")
+    assert shown("T → ∞") == "T → ∞"
+    assert shown("1/T") == "1/T"
+    assert shown("[1, ∞)") == "[1, ∞)"
+    assert shown("0 < k < 1") == "0 < k < 1"
+    assert shown("Models:") == ":Models"  # the colon still ends the term, right to left
+    assert pdf_builder._ltr("שלום,") == "שלום,"
