@@ -139,6 +139,17 @@ Flags:
   later doesn't re-summarize anything, and tweaking `EXAM_PROMPT` only
   invalidates the practice pages.
 
+## Transcribing lecture recordings
+
+`Transcriber.bat` (or `python transcriber.py`) opens a window where you pick
+a folder - a course or a whole semester. It lists every `L<n>.mp4` under it
+that has no `L<n>.srt` beside it, makes an mp3 of each with ffmpeg, runs the
+Hebrew Whisper job on the BGU cluster (`~/transcription/transcribe.sbatch`,
+one GPU job per lecture, 3 at a time) and brings back the `.srt` next to the
+video and the `.txt` into the `Transcripts` folder beside it, where the
+summarizer picks it up. An existing `.txt` there is kept. Needs `ffmpeg` on
+PATH and the `bgu-login` host (with its key) in `~/.ssh/config`.
+
 ## Cost
 
 The default model is `claude-haiku-5-5` ($0.10 / 1M input tokens and

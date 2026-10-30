@@ -190,6 +190,15 @@ def _style(root: tk.Tk) -> None:
     s.configure("Percent.TLabel", background=BG, font=(FONT, 11, "bold"))
 
 
+def _card(parent, title: str) -> ttk.Frame:
+    outer = tk.Frame(parent, background=CARD, highlightbackground=BORDER, highlightthickness=1)
+    outer.pack(fill="x", pady=(0, 12))
+    inner = ttk.Frame(outer, padding=(16, 12, 16, 14))
+    inner.pack(fill="x")
+    ttk.Label(inner, text=title, style="Section.TLabel").pack(anchor="w", pady=(0, 8))
+    return inner
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -225,7 +234,7 @@ class App(tk.Tk):
                   style="Subtitle.TLabel").pack(anchor="w", pady=(0, 14))
 
         # Source card: base folder, then a Course / Book switch and its fields.
-        source = self._card(page, "Source")
+        source = _card(page, "Source")
         ttk.Label(source, text="BASE FOLDER", style="Field.TLabel").pack(anchor="w")
         self._path_field(source, self.base, folder=True).pack(fill="x", pady=(2, 12))
 
@@ -261,7 +270,7 @@ class App(tk.Tk):
         ttk.Label(self.book_panel, text="FOCUS PDF  ·  OPTIONAL", style="Field.TLabel").pack(anchor="w")
         self._path_field(self.book_panel, self.focus).pack(fill="x", pady=(2, 0))
 
-        options = self._card(page, "Options")
+        options = _card(page, "Options")
         grid = ttk.Frame(options)
         grid.pack(fill="x")
         grid.columnconfigure((0, 1), weight=1, uniform="opt")
@@ -302,14 +311,6 @@ class App(tk.Tk):
         self.update_idletasks()
         w, h = max(self.winfo_reqwidth(), 680), self.winfo_reqheight()
         self.geometry(f"+{(self.winfo_screenwidth() - w) // 2}+{max(0, (self.winfo_screenheight() - h) // 2 - 30)}")
-
-    def _card(self, parent, title: str) -> ttk.Frame:
-        outer = tk.Frame(parent, background=CARD, highlightbackground=BORDER, highlightthickness=1)
-        outer.pack(fill="x", pady=(0, 12))
-        inner = ttk.Frame(outer, padding=(16, 12, 16, 14))
-        inner.pack(fill="x")
-        ttk.Label(inner, text=title, style="Section.TLabel").pack(anchor="w", pady=(0, 8))
-        return inner
 
     def _path_field(self, parent, var, folder=False) -> ttk.Frame:
         frame = ttk.Frame(parent)
