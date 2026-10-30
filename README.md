@@ -142,7 +142,8 @@ Flags:
 ## Transcribing lecture recordings
 
 `Transcriber.bat` (or `python transcriber.py`) opens a window where you pick
-a folder - a course or a whole semester. It lists every `L<n>.mp4` under it
+a base folder and then a course in it from the list, like the summarizer
+app. It lists every `L<n>.mp4` in the course
 that has no `L<n>.srt` beside it, makes an mp3 of each with ffmpeg, runs the
 Hebrew Whisper job on the BGU cluster (`~/transcription/submit.sh`, one GPU
 job per lecture, 3 at a time) and brings back the `.srt` next to the

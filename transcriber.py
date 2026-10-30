@@ -84,7 +84,13 @@ class App(tk.Tk):
             saved = json.loads(SETTINGS.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             saved = {}
-        self.folder = tk.StringVar(value=saved.get("folder", ""))
+        if not saved.get("base"):  # first launch: start from the summarizer's base folder
+            try:
+                saved = {"base": json.loads((ROOT / "output" / "app_settings.json").read_text(encoding="utf-8"))["base"]}
+            except (OSError, ValueError, KeyError):
+                pass
+        self.base = tk.StringVar(value=saved.get("base", ""))
+        self.course = tk.StringVar(value=saved.get("course", ""))
 
         page = ttk.Frame(self, style="Root.TFrame", padding=(20, 16, 20, 20))
         page.pack(fill="both", expand=True)
@@ -92,14 +98,25 @@ class App(tk.Tk):
         ttk.Label(page, text="Transcribe every lecture video (L1.mp4, L2.mp4, …) that has no subtitles yet.",
                   style="Subtitle.TLabel").pack(anchor="w", pady=(0, 14))
 
-        source = _card(page, "Folder")
+        # Same layout as the summarizer: a base folder, then a course in it picked from the list.
+        source = _card(page, "Source")
+        ttk.Label(source, text="BASE FOLDER", style="Field.TLabel").pack(anchor="w")
         row = ttk.Frame(source)
-        row.pack(fill="x")
-        ttk.Entry(row, textvariable=self.folder).pack(side="left", fill="x", expand=True)
+        row.pack(fill="x", pady=(2, 12))
+        ttk.Entry(row, textvariable=self.base).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="Browse…", command=self._browse).pack(side="left", padx=(8, 0))
+        ttk.Label(source, text="COURSE NAME", style="Field.TLabel").pack(anchor="w")
+        row = ttk.Frame(source)
+        row.pack(fill="x", pady=(2, 0))
+        prefix = ttk.Label(row, style="Muted.TLabel")
+        prefix.pack(side="left")
+        self.base.trace_add("write", lambda *_: prefix.configure(text=self._prefix()))
+        prefix.configure(text=self._prefix())
+        courses = ttk.Combobox(row, textvariable=self.course, state="readonly")
+        courses.configure(postcommand=lambda: courses.configure(values=self._courses()))
+        courses.bind("<<ComboboxSelected>>", lambda _: self._scan())
+        courses.pack(side="left", fill="x", expand=True, padx=(4, 0))
         ttk.Button(row, text="Scan", command=self._scan).pack(side="left", padx=(8, 0))
-        ttk.Label(source, text="Searched with its subfolders, so a whole semester works too.",
-                  style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
 
         lectures = _card(page, "Lectures")
         self.tree = ttk.Treeview(lectures, columns=("lecture", "status"), show="headings", height=8)
@@ -138,27 +155,40 @@ class App(tk.Tk):
         self.status.configure(text=f"●  {text}", foreground=color)
 
     def _browse(self) -> None:
-        path = filedialog.askdirectory(initialdir=self.folder.get() or None)
+        path = filedialog.askdirectory(initialdir=self.base.get() or None)
         if path:
-            self.folder.set(str(Path(path)))
+            self.base.set(str(Path(path)))
+            self.course.set("")
             self._scan()
 
+    def _prefix(self) -> str:
+        return str(Path(self.base.get())).rstrip("\\") + "\\" if self.base.get() else ""
+
+    def _courses(self) -> list[str]:
+        try:
+            return sorted(d.name for d in Path(self.base.get()).iterdir()
+                          if d.is_dir() and not d.name.startswith((".", "_")))
+        except OSError:
+            return []
+
     def _scan(self) -> None:
-        folder = Path(self.folder.get())
+        if self.running:  # the list is the run's progress; keep it until the run ends
+            return
+        folder = Path(self.base.get(), self.course.get())
         self.tree.delete(*self.tree.get_children())
-        self.videos = pending(folder) if self.folder.get() and folder.is_dir() else []
+        ready = bool(self.base.get() and self.course.get() and folder.is_dir())
+        self.videos = pending(folder) if ready else []
         for i, video in enumerate(self.videos):
             self.tree.insert("", "end", iid=str(i), values=(video.relative_to(folder), "Waiting"))
-        self.stage.configure(text=f"{len(self.videos)} lecture(s) to transcribe" if self.folder.get() else
-                             "Choose a folder")
-        if folder.is_dir():
-            SETTINGS.parent.mkdir(exist_ok=True)
-            SETTINGS.write_text(json.dumps({"folder": self.folder.get()}), encoding="utf-8")
+        self.stage.configure(text=f"{len(self.videos)} lecture(s) to transcribe" if ready else "Choose a course")
+        SETTINGS.parent.mkdir(exist_ok=True)
+        SETTINGS.write_text(json.dumps({"base": self.base.get(), "course": self.course.get()}), encoding="utf-8")
 
     def start(self) -> None:
         self._scan()
         if not self.videos:
-            messagebox.showinfo("Lecture Transcriber", "Every L<n>.mp4 in this folder already has an .srt.")
+            messagebox.showinfo("Lecture Transcriber", "Every L<n>.mp4 in this course already has an .srt."
+                                if self.course.get() else "Choose a course first.")
             return
         self.running, self.stopping = True, False
         self.rows = {i: ["Waiting", 0.0, time.monotonic()] for i in range(len(self.videos))}
