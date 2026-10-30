@@ -2,7 +2,7 @@
 
 Finds every L<n>.mp4 under the chosen folder with no L<n>.srt beside it,
 makes an mp3 of it (ffmpeg), runs the Hebrew Whisper GPU job on the cluster
-(~/transcription/transcribe.sbatch) and brings back the .srt, next to the
+(~/transcription/submit.sh) and brings back the .srt, next to the
 video, and the .txt, into the Transcripts folder beside it, where main.py
 picks it up.
 
@@ -33,9 +33,9 @@ SSH = ["-o", "BatchMode=yes"]  # fail instead of waiting on a password prompt no
 PARALLEL = 3  # lectures in flight at once; each holds one GPU job while it runs
 SETTINGS = ROOT / "output" / "transcriber_settings.json"
 LECTURE = re.compile(r"L\d+", re.I)
-# Submits the job and waits for it, then prints the end of its log.
-JOB = ("jid=$(sbatch --parsable --wait ~/transcription/transcribe.sbatch ~/audio/{0}.mp3); rc=$?; "
-       "tail -n 5 ~/transcription/logs/whisper_he_$jid.out; exit $rc")
+# Submits the job (an RTX 3090 if one frees up within a minute, else a GTX 1080),
+# waits for it and prints the end of its log; exits non-zero if it failed.
+JOB = "bash ~/transcription/submit.sh ~/audio/{0}.mp3"
 # Where each step starts on its lecture's share of the bar.
 STEPS = {"Converting to mp3": 0.0, "Uploading": 0.1, "Transcribing on the GPU": 0.25, "Downloading": 0.95}
 
