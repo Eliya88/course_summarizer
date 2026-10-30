@@ -6,10 +6,16 @@ makes an mp3 of it (ffmpeg), runs the Hebrew Whisper GPU job on the cluster
 video, and the .txt, into the Transcripts folder beside it, where main.py
 picks it up.
 
+The VPN drops now and then, so every step can pick up where it stopped: each
+lecture has a fixed name on the cluster, the job runs detached from the
+connection, and a lecture's next step is read off the cluster's files. A lost
+connection is retried for a while; after that, Run again resumes.
+
 Launch with "Transcriber.bat" (no console) or `python transcriber.py`.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import queue
 import re
@@ -21,7 +27,6 @@ import threading
 import time
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -29,15 +34,31 @@ from app import ACCENT, BG, BORDER, CARD, FONT, GREEN, MUTED, RED, ROOT, TEXT, _
 from src.config import _TRANSCRIPT_DIR_NAMES, _natural_key
 
 HOST = "bgu-login"  # ~/.ssh/config alias for slurm.bgu.ac.il, with the cluster key
-SSH = ["-o", "BatchMode=yes"]  # fail instead of waiting on a password prompt nobody sees
+# Fail instead of waiting on a password prompt nobody sees, or on a VPN that's down.
+SSH = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
 PARALLEL = 3  # lectures in flight at once; each holds one GPU job while it runs
 SETTINGS = ROOT / "output" / "transcriber_settings.json"
 LECTURE = re.compile(r"L\d+", re.I)
-# Submits the job (an RTX 3090 if one frees up within a minute, else a GTX 1080),
-# waits for it and prints the end of its log; exits non-zero if it failed.
-JOB = "bash ~/transcription/submit.sh ~/audio/{0}.mp3"
+POLL = 30  # seconds between checks on a running job
+RETRY, GIVE_UP = 30, 30 * 60  # seconds between tries while the connection is down, and how long to keep trying
+# How far a lecture got on the cluster, as its first line: done | failed (then the
+# log's end) | running (then submit.sh's last line) | uploaded | partial <bytes uploaded>.
+STATE = """cd ~/transcription; s={0}
+if [ -f output/$s.srt ] && [ -f output/$s.txt ]; then echo done
+elif [ -f logs/$s.rc ]; then echo failed; tail -n 5 logs/$s.submit
+elif [ -f logs/$s.submit ]; then echo running; tail -n 1 logs/$s.submit
+elif [ -f ~/audio/$s.mp3 ]; then echo uploaded
+else echo partial $(stat -c %s ~/audio/$s.mp3.part 2>/dev/null || echo 0); fi"""
+# Starts submit.sh detached, so a dropped connection doesn't kill it. It takes an
+# RTX 3090 if one frees up within a minute, else a GTX 1080, and waits for the
+# job; its exit code lands in logs/<stem>.rc.
+START = r"""s={0}; cd ~/transcription; mv -f ~/audio/$s.mp3.part ~/audio/$s.mp3 2>/dev/null
+rm -f logs/$s.rc; : > logs/$s.submit
+setsid nohup bash -c "bash submit.sh ~/audio/$s.mp3 > logs/$s.submit 2>&1; echo \$? > logs/$s.rc" \
+  > /dev/null 2>&1 < /dev/null &"""
 # Where each step starts on its lecture's share of the bar.
-STEPS = {"Converting to mp3": 0.0, "Uploading": 0.1, "Transcribing on the GPU": 0.25, "Downloading": 0.95}
+STEPS = {"Converting to mp3": 0.0, "Uploading": 0.1, "Waiting for a GPU": 0.25, "Transcribing on the GPU": 0.3,
+         "Downloading": 0.95}
 
 
 class Stopped(Exception):
@@ -78,7 +99,8 @@ class App(tk.Tk):
         self.events: queue.Queue = queue.Queue()
         self.lock = threading.Lock()
         self.procs: set[subprocess.Popen] = set()
-        self.running = self.stopping = False
+        self.running = False
+        self.stop_event = threading.Event()
         self.videos: list[Path] = []
         try:
             saved = json.loads(SETTINGS.read_text(encoding="utf-8"))
@@ -190,7 +212,9 @@ class App(tk.Tk):
             messagebox.showinfo("Lecture Transcriber", "Every L<n>.mp4 in this course already has an .srt."
                                 if self.course.get() else "Choose a course first.")
             return
-        self.running, self.stopping = True, False
+        self.running = True
+        self.stop_event.clear()
+        self.current: dict[int, str] = {}
         self.rows = {i: ["Waiting", 0.0, time.monotonic()] for i in range(len(self.videos))}
         self.errors: dict[str, str] = {}
         self.run_btn.configure(state="disabled")
@@ -214,15 +238,30 @@ class App(tk.Tk):
                 self._run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(video),
                            "-vn", "-ac", "1", "-b:a", "64k", str(part)])
                 part.replace(mp3)
-            # Remote names are ASCII and unique, so parallel lectures never collide.
-            stem = f"{video.stem}_{datetime.now():%Y%m%d_%H%M%S}_{i}"
-            self._step(i, "Uploading")
-            self._run(["scp", *SSH, str(mp3), f"{HOST}:audio/{stem}.mp3"])
-            self._step(i, "Transcribing on the GPU")
-            self._run(["ssh", *SSH, HOST, JOB.format(stem)])
+            # Named after the video (path and size), so a later run finds this lecture on the cluster.
+            stem = f"{video.stem}_{hashlib.sha1(f'{video.resolve()}|{video.stat().st_size}'.encode()).hexdigest()[:10]}"
+            state, detail = self._state(i, stem)
+            if state.startswith("partial"):
+                self._step(i, "Uploading")
+                have, size = int(state.split()[1]), mp3.stat().st_size
+                if have < size:  # sftp's reput carries on a half-uploaded file
+                    batch = f"{'reput' if have else 'put'} {mp3.name} audio/{stem}.mp3.part\n"
+                    self._remote(i, ["sftp", *SSH, "-b", "-", HOST], batch, cwd=mp3.parent)
+            started = False
+            while state != "done":
+                if state == "failed" and started:
+                    raise RuntimeError(detail or "The job failed. See ~/transcription/logs/ on the cluster.")
+                if state != "running":  # not started yet, or failed on an earlier run
+                    self._remote(i, ["ssh", *SSH, HOST, START.format(stem)])
+                    started = True
+                step = "Transcribing on the GPU" if "RUNNING" in detail else "Waiting for a GPU"
+                if self.current.get(i) != step:
+                    self._step(i, step)
+                self._wait(POLL)
+                state, detail = self._state(i, stem)
             self._step(i, "Downloading")
             with tempfile.TemporaryDirectory() as tmp:
-                self._run(["scp", *SSH, f"{HOST}:transcription/output/{stem}.*", tmp])
+                self._remote(i, ["scp", *SSH, f"{HOST}:transcription/output/{stem}.*", tmp])
                 txt = transcripts_dir(video) / f"{video.stem}.txt"
                 if not txt.exists():  # keep a transcript that's already there (maybe from another tool)
                     shutil.move(Path(tmp, stem + ".txt"), txt)
@@ -235,20 +274,47 @@ class App(tk.Tk):
             self.events.put((i, "Failed", None))
 
     def _step(self, i: int, step: str) -> None:
+        self.current[i] = step
         self.events.put((i, step, STEPS[step]))
 
-    def _run(self, cmd: list[str]) -> str:
+    def _state(self, i: int, stem: str) -> tuple[str, str]:
+        state, _, detail = self._remote(i, ["ssh", *SSH, HOST, STATE.format(stem)]).strip().partition("\n")
+        return state, detail.strip()
+
+    def _wait(self, seconds: float) -> None:
+        if self.stop_event.wait(seconds):
+            raise Stopped
+
+    def _remote(self, i: int, cmd: list[str], stdin: str | None = None, cwd: Path | None = None) -> str:
+        """`_run` for a command that talks to the cluster: retried while the connection is down."""
+        failing_since = None
+        while True:
+            try:
+                out = self._run(cmd, stdin, cwd)
+                if failing_since is not None and i in self.current:
+                    self._step(i, self.current[i])  # back from "Connection lost"
+                return out
+            except RuntimeError as e:
+                failing_since = failing_since or time.monotonic()
+                if time.monotonic() - failing_since > GIVE_UP:
+                    raise RuntimeError(f"No connection to the cluster for {GIVE_UP // 60} min "
+                                       f"(press Run to resume):\n{e}") from None
+                self.events.put((i, "Connection lost, retrying", None))
+                self._wait(RETRY)
+
+    def _run(self, cmd: list[str], stdin: str | None = None, cwd: Path | None = None) -> str:
         with self.lock:
-            if self.stopping:
+            if self.stop_event.is_set():
                 raise Stopped
-            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd,
+                                    encoding="utf-8", errors="replace",
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             self.procs.add(proc)
-        out = proc.communicate()[0]
+        out = proc.communicate(stdin)[0]
         with self.lock:
             self.procs.discard(proc)
-        if self.stopping:
+        if self.stop_event.is_set():
             raise Stopped
         if proc.returncode:
             raise RuntimeError(out.strip()[-600:] or f"{cmd[0]} exited with code {proc.returncode}")
@@ -266,7 +332,8 @@ class App(tk.Tk):
         now = time.monotonic()
         for i, (status, _, t0) in self.rows.items():
             elapsed = int(now - t0)
-            text = f"{status}  ·  {elapsed // 60}:{elapsed % 60:02d}" if status in STEPS else status
+            text = status if status in ("Waiting", "Done", "Failed", "Stopped") else \
+                f"{status}  ·  {elapsed // 60}:{elapsed % 60:02d}"
             self.tree.set(str(i), "status", text)
         value = sum(r[1] for r in self.rows.values()) / len(self.rows)
         self.progress.configure(value=value * 100)
@@ -282,7 +349,7 @@ class App(tk.Tk):
         self.running = False
         self.run_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
-        if self.stopping:
+        if self.stop_event.is_set():
             self._set_status("Stopped", MUTED)
         elif self.errors:
             self._set_status(f"{len(self.errors)} failed", RED)
@@ -292,7 +359,7 @@ class App(tk.Tk):
 
     def stop(self) -> None:
         with self.lock:
-            self.stopping = True
+            self.stop_event.set()
             for proc in self.procs:
                 proc.kill()
 

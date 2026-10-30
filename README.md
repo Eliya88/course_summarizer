@@ -151,6 +151,12 @@ video and the `.txt` into the `Transcripts` folder beside it, where the
 summarizer picks it up. An existing `.txt` there is kept. Needs `ffmpeg` on
 PATH and the `bgu-login` host (with its key) in `~/.ssh/config`.
 
+If the VPN drops, the app keeps retrying for 30 minutes. After that, or
+after Stop, press Run again and each lecture picks up where it left off: a
+half-done upload continues from the bytes already on the cluster, and a job
+that was already submitted keeps running on its own and isn't submitted
+again. Only the results are downloaded.
+
 ## Cost
 
 The default model is `claude-haiku-5-5` ($0.10 / 1M input tokens and
