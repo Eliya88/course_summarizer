@@ -34,6 +34,18 @@ def _natural_key(s: str) -> list:
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
 
 
+def fingerprint(paths, *tags: str) -> str:
+    """sha256 of the tags, then each path's name and mtime (when it exists)."""
+    h = hashlib.sha256()
+    for t in tags:
+        h.update(t.encode("utf-8"))
+    for p in paths:
+        h.update(p.name.encode("utf-8"))
+        if p.exists():
+            h.update(str(p.stat().st_mtime_ns).encode("utf-8"))
+    return h.hexdigest()
+
+
 def _clean_unit_name(stem: str) -> str:
     name = re.sub(r"[_]+", " ", stem).strip()
     return re.sub(r"\s+", " ", name)
@@ -57,30 +69,17 @@ class Unit:
 
     def cache_key(self, course: "CourseConfig") -> str:
         """Hash of model + file names + mtimes, so a model switch or edited/new files invalidate the cache."""
-        h = hashlib.sha256()
-        h.update(PROMPT_VERSION.encode("utf-8"))
-        h.update(self.name.encode("utf-8"))
-        h.update(course.model.encode("utf-8"))
-        # Only folded in when set, so regular courses keep their old keys.
-        if course.book:
-            h.update(BOOK_PROMPT_VERSION.encode("utf-8"))
-        if course.focus:
-            h.update(course.focus.encode("utf-8"))
-        if course.instructions:
-            h.update(course.instructions.encode("utf-8"))
+        # Optional tags are only folded in when set, so regular courses keep their old keys.
+        tags = [PROMPT_VERSION, self.name, course.model]
+        tags += [BOOK_PROMPT_VERSION] if course.book else []
+        tags += [t for t in (course.focus, course.instructions) if t]
+        paths = self.source_paths(course)
         if self.transcript_file:
-            t = self.transcript_path(course)
-            h.update(TRANSCRIPT_PROMPT_VERSION.encode("utf-8"))
+            tags.append(TRANSCRIPT_PROMPT_VERSION)
             if not self.lecture_files:
-                h.update(TRANSCRIPT_ONLY_PROMPT_VERSION.encode("utf-8"))
-            h.update(t.name.encode("utf-8"))
-            if t.exists():
-                h.update(str(t.stat().st_mtime_ns).encode("utf-8"))
-        for p in self.source_paths(course):
-            h.update(p.name.encode("utf-8"))
-            if p.exists():
-                h.update(str(p.stat().st_mtime_ns).encode("utf-8"))
-        return h.hexdigest()[:16]
+                tags.append(TRANSCRIPT_ONLY_PROMPT_VERSION)
+            paths.insert(0, self.transcript_path(course))
+        return fingerprint(paths, *tags)[:16]
 
 
 @dataclass
@@ -176,7 +175,6 @@ def _find_subdir(course_dir: Path, candidate_names: set) -> Optional[Path]:
 def discover_course_config(
     course_dir: Path,
     output_root: Optional[Path] = None,
-    model: str = DEFAULT_MODEL,
 ) -> CourseConfig:
     """Build a CourseConfig straight from a course folder, no YAML needed.
 
@@ -230,7 +228,6 @@ def discover_course_config(
         exercises_dir=exercises_dir,
         output_dir=output_dir,
         units=units,
-        model=model,
         exams_dir=exams_dir,
     )
 
@@ -298,17 +295,17 @@ def parse_chapters(spec: str) -> List[int]:
 
 def discover_book_config(
     book_path: Path,
-    chapters: List[int],
+    spec: str,
     focus_path: Optional[Path] = None,
     output_root: Optional[Path] = None,
-    model: str = DEFAULT_MODEL,
 ) -> CourseConfig:
-    """Build a CourseConfig whose units are the given chapters of a textbook
+    """Build a CourseConfig whose units are the chapters in `spec` (e.g. "1-5,7") of a textbook
     PDF, found from its bookmarks. Each chapter is cut out once into the
     output cache and reused after that."""
     book_path = Path(book_path).resolve()
     if not book_path.is_file():
         raise FileNotFoundError(f"Book not found: {book_path}")
+    chapters = parse_chapters(spec)
     reader = PdfReader(str(book_path))
     ranges = pdf_utils.chapter_ranges(reader)
     if not ranges:
@@ -331,16 +328,13 @@ def discover_book_config(
             pdf_utils.extract_pages(reader, first, last, out)
         units.append(Unit(name=f"Chapter {c}: {title}", lecture_files=[out.name]))
 
-    spec = f"{chapters[0]}-{chapters[-1]}" if len(chapters) > 1 and chapters == list(range(chapters[0], chapters[-1] + 1)) \
-        else ",".join(map(str, chapters))
     return CourseConfig(
-        course_name=f"{book_path.stem} ch{spec}",
+        course_name=f"{book_path.stem} ch{spec.replace(' ', '')}",
         root_dir=book_path.parent,
         lectures_dir=chapters_dir,
         exercises_dir=chapters_dir,
         output_dir=output_dir,
         units=units,
-        model=model,
         book=True,
         focus=pdf_utils.extract_text(Path(focus_path)) if focus_path else "",
     )

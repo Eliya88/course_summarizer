@@ -1,11 +1,7 @@
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from pypdf import PdfWriter
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src import claude_client
 
@@ -65,11 +61,11 @@ def test_chat_keeps_history_and_puts_documents_first(tmp_path):
     writer = PdfWriter()
     writer.add_blank_page(width=100, height=100)
     writer.write(tmp_path / "L1.pdf")
-    doc = claude_client.upload_pdf(None, tmp_path / "L1.pdf")
+    doc = claude_client.pdf_document(tmp_path / "L1.pdf")
 
     calls, results = [], [ConnectionError(), reply("a1"), reply("a2")]
     client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **kw: FakeStream(calls, kw, results.pop(0))))
-    chat = claude_client.start_chat(client, "m", "sys", max_output_tokens=10)
+    chat = claude_client.Chat(client, "m", "sys", 10)
 
     with pytest.raises(ConnectionError):
         chat.send_message(["q1", doc])

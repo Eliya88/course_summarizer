@@ -1,11 +1,6 @@
-import sys
-from pathlib import Path
-
 import pytest
 from fpdf import FPDF
 from pypdf import PdfReader
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src import config, pipeline, prompts
 
@@ -45,7 +40,7 @@ def test_parse_chapters():
 
 def test_discover_book_config(tmp_path):
     book = make_book(tmp_path)
-    course = config.discover_book_config(book, [1, 3], output_root=tmp_path / "out")
+    course = config.discover_book_config(book, "1,3", output_root=tmp_path / "out")
     assert course.book and course.course_name == "book ch1,3"
     assert [u.name for u in course.units] == ["Chapter 1: Intro", "Chapter 3: Embeddings"]
     files = [p for u in course.units for p in u.source_paths(course)]
@@ -54,7 +49,7 @@ def test_discover_book_config(tmp_path):
 
     mtimes = [p.stat().st_mtime_ns for p in files]
     keys = [u.cache_key(course) for u in course.units]
-    again = config.discover_book_config(book, [1, 3], output_root=tmp_path / "out")
+    again = config.discover_book_config(book, "1,3", output_root=tmp_path / "out")
     assert [p.stat().st_mtime_ns for p in files] == mtimes
     assert [u.cache_key(again) for u in again.units] == keys
 
@@ -62,11 +57,11 @@ def test_discover_book_config(tmp_path):
     assert course.units[0].cache_key(course) != keys[0]
 
     with pytest.raises(ValueError):
-        config.discover_book_config(book, [4], output_root=tmp_path / "out")
+        config.discover_book_config(book, "4", output_root=tmp_path / "out")
 
 
 def test_prompts_regular_unchanged_book_has_focus(tmp_path):
-    course = config.discover_book_config(make_book(tmp_path), [1], output_root=tmp_path / "out")
+    course = config.discover_book_config(make_book(tmp_path), "1", output_root=tmp_path / "out")
     course.focus = "Implement BPE"
     book_sys = pipeline._system_instruction(course)
     assert "Implement BPE" in book_sys and "textbook chapter" in book_sys

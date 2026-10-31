@@ -4,11 +4,10 @@ model always has the *breadth* of the whole course, even while it's doing a
 *deep* slide-by-slide pass on one unit's native PDF(s)."""
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import List
 
-from .config import CourseConfig
+from .config import CourseConfig, fingerprint
 from .pdf_utils import extract_text
 
 
@@ -25,28 +24,12 @@ def _all_source_pdfs(course: CourseConfig) -> List[Path]:
     return sorted(seen, key=lambda p: p.name)
 
 
-def _digest_cache_path(course: CourseConfig) -> Path:
-    return course.output_dir / "cache" / "course_context.md"
-
-
-def _source_fingerprint(pdfs: List[Path]) -> str:
-    h = hashlib.sha256()
-    for p in pdfs:
-        h.update(p.name.encode("utf-8"))
-        h.update(str(p.stat().st_mtime_ns).encode("utf-8"))
-    return h.hexdigest()
-
-
-def build_course_context(course: CourseConfig, force: bool = False) -> str:
+def build_course_context(course: CourseConfig) -> str:
     """Returns the digest text, rebuilding it only if source PDFs changed."""
     pdfs = _all_source_pdfs(course)
-    cache_path = _digest_cache_path(course)
-    fingerprint_path = cache_path.with_suffix(".fingerprint")
-
-    fingerprint = _source_fingerprint(pdfs)
-    if not force and cache_path.exists() and fingerprint_path.exists():
-        if fingerprint_path.read_text(encoding="utf-8").strip() == fingerprint:
-            return cache_path.read_text(encoding="utf-8")
+    cache_path = course.output_dir / "cache" / f"course_context_{fingerprint(pdfs)[:16]}.md"
+    if cache_path.exists():
+        return cache_path.read_text(encoding="utf-8")
 
     print(f"[course_context] Extracting text from {len(pdfs)} PDF(s) for course digest...")
     sections = [f"# Full course material index: {course.course_name}\n"]
@@ -59,6 +42,5 @@ def build_course_context(course: CourseConfig, force: bool = False) -> str:
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(digest, encoding="utf-8")
-    fingerprint_path.write_text(fingerprint, encoding="utf-8")
 
     return digest

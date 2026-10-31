@@ -11,7 +11,6 @@ exhaustive coverage without needing several manual chat sessions.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -21,7 +20,7 @@ from typing import List, Optional
 
 from . import claude_client, pdf_utils, prompts
 from .log import log, set_unit
-from .config import CourseConfig, Unit
+from .config import CourseConfig, Unit, fingerprint
 from .course_context import build_course_context
 
 # How many agenda topics go into one Claude call. Batching cuts wall-clock
@@ -68,17 +67,6 @@ def _part_cache_path(course: CourseConfig, unit: Unit, k: int, n: int) -> Path:
     return course.output_dir / "cache" / f"part_{unit.cache_key(course)}_{k}of{n}.json"
 
 
-def _exam_fingerprint(course: CourseConfig) -> str:
-    """Identity of the past-exam material + the prompt that consumes it, so
-    swapping in a new exam paper regenerates the practice pages."""
-    h = hashlib.sha256()
-    h.update(prompts.EXAM_PROMPT_VERSION.encode("utf-8"))
-    for p in course.exam_paths():
-        h.update(p.name.encode("utf-8"))
-        h.update(str(p.stat().st_mtime_ns).encode("utf-8"))
-    return h.hexdigest()[:12]
-
-
 def _exam_cache_path(course: CourseConfig, unit: Unit, exam_fp: str) -> Path:
     """Exam pages are cached apart from the chapter summary they attach to,
     so turning --with-tests on later doesn't throw away the summaries."""
@@ -104,9 +92,7 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
 
     log(f"  Looking for a past-exam question on '{unit.name}'...")
     system_instruction = _system_instruction(course)
-    chat = claude_client.start_chat(
-        client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
-    )
+    chat = claude_client.Chat(client, course.model, system_instruction, SECTION_MAX_OUTPUT_TOKENS)
     prompt = prompts.EXAM_PROMPT.format(
         unit_name=unit.name,
         unit_summary=unit_markdown,
@@ -193,9 +179,7 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
     slides: a transcript part leaves both alone. `covered_terms` are the
     earlier parts' glossary terms. Returns (topic titles, section bodies,
     glossary)."""
-    chat = claude_client.start_chat(
-        client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
-    )
+    chat = claude_client.Chat(client, course.model, system_instruction, SECTION_MAX_OUTPUT_TOKENS)
 
     agenda_prompt = prompts.AGENDA_PROMPT.format(digest=digest, unit_name=label)
     if course.book:
@@ -289,7 +273,7 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
         else:
             names = [p.name for p in part] + ([transcript.name] if transcript else [])
             log(f"  Part {k}/{len(parts)}: uploading {', '.join(names)} to Claude...")
-            uploaded_files = [claude_client.upload_pdf(client, p) for p in part]
+            uploaded_files = [claude_client.pdf_document(p) for p in part]
             later_slides = ""
             if transcript_doc:
                 uploaded_files.append(transcript_doc)
@@ -321,8 +305,7 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     return markdown
 
 
-def run(course: CourseConfig, use_cache: bool = True, force_context: bool = False,
-        with_tests: bool = False) -> List[str]:
+def run(course: CourseConfig, use_cache: bool = True, with_tests: bool = False) -> List[str]:
     """Runs every unit and returns a list of top-level Markdown sections
     (cover page first, then one per unit) - kept separate so the PDF builder
     can insert a page break between each one.
@@ -331,7 +314,7 @@ def run(course: CourseConfig, use_cache: bool = True, force_context: bool = Fals
     appended, provided the course has an exams folder to draw from."""
     client = claude_client.make_client()
     # A book's chapters are too long to resend as a digest on every call.
-    digest = "" if course.book else build_course_context(course, force=force_context)
+    digest = "" if course.book else build_course_context(course)
 
     exam_files, exam_fp = [], ""
     if with_tests:
@@ -340,11 +323,11 @@ def run(course: CourseConfig, use_cache: bool = True, force_context: bool = Fals
             log("[pipeline] --with-tests was passed but no past-exam PDFs were found "
                   f"({course.exams_dir or 'no exams folder'}) - continuing without exam pages.")
         else:
-            exam_fp = _exam_fingerprint(course)
+            exam_fp = fingerprint(exam_paths, prompts.EXAM_PROMPT_VERSION)[:12]
             log(f"[pipeline] Uploading {len(exam_paths)} past-exam PDF(s) from {course.exams_dir.name}...")
             for p in exam_paths:
                 log(f"  Uploading {p.name}...")
-                exam_files.append(claude_client.upload_pdf(client, p))
+                exam_files.append(claude_client.pdf_document(p))
 
     def one_unit(n: int, unit: Unit) -> str:
         set_unit(n)

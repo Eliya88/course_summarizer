@@ -1,11 +1,7 @@
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from pypdf import PdfReader, PdfWriter
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src import config, pdf_utils, pipeline
 from src.config import Unit
@@ -49,8 +45,8 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
 
     chats, uploads = [], []
-    monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda client, p: uploads.append(p.name) or p.name)
-    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: chats.append([]) or chats[-1])
+    monkeypatch.setattr(pipeline.claude_client, "pdf_document", lambda p: uploads.append(p.name) or p.name)
+    monkeypatch.setattr(pipeline.claude_client, "Chat", lambda *a, **kw: chats.append([]) or chats[-1])
 
     def fake_send(chat, parts):
         chat.append(parts)
@@ -83,8 +79,8 @@ def test_rerun_after_a_failed_part_reuses_the_parts_before_it(tmp_path, monkeypa
     unit = Unit(name="Unit 1", lecture_files=["L1.pdf"])
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
     uploads = []
-    monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda client, p: uploads.append(p.name) or p.name)
-    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: None)
+    monkeypatch.setattr(pipeline.claude_client, "pdf_document", lambda p: uploads.append(p.name) or p.name)
+    monkeypatch.setattr(pipeline.claude_client, "Chat", lambda *a, **kw: None)
     fail = [True]
 
     def fake_send(chat, parts):
@@ -114,8 +110,8 @@ def test_later_part_with_transcript_skips_earlier_topics(tmp_path, monkeypatch):
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
     monkeypatch.setattr(pipeline.pdf_utils, "extract_text", lambda p: f"text of {p.name}")
     agendas, glossaries = [], []
-    monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda client, p: p.name)
-    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: None)
+    monkeypatch.setattr(pipeline.claude_client, "pdf_document", lambda p: p.name)
+    monkeypatch.setattr(pipeline.claude_client, "Chat", lambda *a, **kw: None)
 
     def fake_send(chat, parts):
         if parts[0].startswith("Here is the full-course"):
@@ -142,7 +138,7 @@ def test_slide_agenda_allows_one_topic_per_three_slides(tmp_path, monkeypatch):
     make_pdf(tmp_path / "L2.pdf", 24)
     course = SimpleNamespace(model="m", book=False, focus="", instructions="", output_dir=tmp_path / "out")
     sends = []
-    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: None)
+    monkeypatch.setattr(pipeline.claude_client, "Chat", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline.claude_client, "send", lambda chat, parts: sends.append(parts[0]) or "1. A\n2. B")
 
     pipeline._summarize_part(None, course, "sys", "d", "L2", [], 1, [tmp_path / "L2.pdf"])
@@ -159,8 +155,8 @@ def test_book_unit_is_one_chat_of_three_calls(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
     sends = []
-    monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda client, p: p.name)
-    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda *a, **kw: None)
+    monkeypatch.setattr(pipeline.claude_client, "pdf_document", lambda p: p.name)
+    monkeypatch.setattr(pipeline.claude_client, "Chat", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline.claude_client, "send",
                         lambda chat, parts: sends.append(parts[0]) or ("1. A\n2. B\n3. C\n4. D\n5. E" if len(sends) == 1 else "x"))
 
@@ -197,8 +193,8 @@ def test_transcript_only_unit_is_one_chat_over_the_text(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(Unit, "cache_key", lambda self, c: "k")
     systems, sends = [], []
-    monkeypatch.setattr(pipeline.claude_client, "upload_pdf", lambda *a: pytest.fail("no PDF to upload"))
-    monkeypatch.setattr(pipeline.claude_client, "start_chat", lambda client, model, system, **kw: systems.append(system))
+    monkeypatch.setattr(pipeline.claude_client, "pdf_document", lambda *a: pytest.fail("no PDF to upload"))
+    monkeypatch.setattr(pipeline.claude_client, "Chat", lambda client, model, system, max_tokens: systems.append(system))
     monkeypatch.setattr(pipeline.claude_client, "send", lambda chat, parts: sends.append(parts) or "1. A\n2. B")
 
     pipeline.process_unit(None, course, Unit(name="L2", transcript_file="L2.txt"), digest="d", use_cache=False)
@@ -220,7 +216,7 @@ def test_run_overlaps_units_and_keeps_their_order(monkeypatch, capsys):
         return unit.name
 
     monkeypatch.setattr(pipeline.claude_client, "make_client", lambda: None)
-    monkeypatch.setattr(pipeline, "build_course_context", lambda course, force=False: "")
+    monkeypatch.setattr(pipeline, "build_course_context", lambda course: "")
     monkeypatch.setattr(pipeline, "process_unit", fake_unit)
     course = SimpleNamespace(book=False, course_name="C", units=[Unit(name=n) for n in "ABC"])
     assert pipeline.run(course)[1:] == ["A", "B", "C"]

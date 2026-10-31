@@ -31,7 +31,6 @@ OPTIONS = [
     ("Include exercises", "Also summarize exercise and tutorial units", "--with-exercises"),
     ("Add past-exam practice", "A worked exam question after each chapter", "--with-tests"),
     ("Ignore cache", "Re-run every unit (new API calls)", "--no-cache"),
-    ("Rebuild course context", "Re-read the full course digest", "--refresh-context"),
 ]
 
 BG, CARD, BORDER = "#f3f4f6", "#ffffff", "#e5e7eb"
@@ -199,22 +198,69 @@ def _card(parent, title: str) -> ttk.Frame:
     return inner
 
 
-class App(tk.Tk):
-    def __init__(self) -> None:
+def _load_settings(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+class Window(tk.Tk):
+    """What the summarizer and transcriber windows share."""
+
+    def __init__(self, title: str) -> None:
         super().__init__()
-        self.title("Course Summarizer")
+        self.title(title)
         self.minsize(680, 0)
         self.configure(background=BG)
         _style(self)
+
+    def _progress_bar(self, page) -> None:
+        self.progress = ttk.Progressbar(page, maximum=100)
+        self.progress.pack(fill="x", pady=(4, 6))
+        info = ttk.Frame(page, style="Root.TFrame")
+        info.pack(fill="x")
+        self.stage = ttk.Label(info, style="Subtitle.TLabel")
+        self.stage.pack(side="left")
+        self.percent = ttk.Label(info, style="Percent.TLabel")
+        self.percent.pack(side="right")
+
+    def _center(self) -> None:
+        """Open centered on the screen instead of Windows' default top-left spot."""
+        self.update_idletasks()
+        w, h = max(self.winfo_reqwidth(), 680), self.winfo_reqheight()
+        self.geometry(f"+{(self.winfo_screenwidth() - w) // 2}+{max(0, (self.winfo_screenheight() - h) // 2 - 30)}")
+
+    def _set_status(self, text: str, color: str) -> None:
+        self.status.configure(text=f"●  {text}", foreground=color)
+
+    def _prefix(self) -> str:
+        return os.path.normpath(self.base.get()).rstrip("\\") + "\\" if self.base.get() else ""
+
+    def _courses(self) -> list[str]:
+        try:
+            return sorted(d.name for d in Path(self.base.get()).iterdir()
+                          if d.is_dir() and not d.name.startswith((".", "_")))
+        except OSError:
+            return []
+
+
+def launch(cls: type[Window]) -> None:
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on scaled displays
+    cls().mainloop()
+
+
+class App(Window):
+    def __init__(self) -> None:
+        super().__init__("Course Summarizer")
         px = float(self.tk.call("tk", "scaling"))
         self.proc: subprocess.Popen | None = None
         self.lines: queue.Queue[str | None] = queue.Queue()
         self.pdf_path: str | None = None
 
-        try:
-            saved = json.loads(SETTINGS.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            saved = {}
+        saved = _load_settings(SETTINGS)
         self.base = tk.StringVar(value=os.path.normpath(saved["base"]) if saved.get("base") else "")
         self.base.trace_add("write", lambda *_: self._save_settings())
         self.open_when_ready = bool(saved.get("open_when_ready"))
@@ -294,23 +340,12 @@ class App(tk.Tk):
         self.status.pack(side="right")
         self._set_status("Ready", MUTED)
 
-        self.progress = ttk.Progressbar(page, maximum=100)
-        self.progress.pack(fill="x", pady=(4, 6))
-        info = ttk.Frame(page, style="Root.TFrame")
-        info.pack(fill="x")
-        self.stage = ttk.Label(info, style="Subtitle.TLabel")
-        self.stage.pack(side="left")
-        self.percent = ttk.Label(info, style="Percent.TLabel")
-        self.percent.pack(side="right")
+        self._progress_bar(page)
 
         self._sync_mode()
         self.bind("<Return>", lambda _: self.run_btn.instate(["!disabled"]) and self.start())
         self.protocol("WM_DELETE_WINDOW", self._close)
-
-        # Open centered on the screen instead of Windows' default top-left spot.
-        self.update_idletasks()
-        w, h = max(self.winfo_reqwidth(), 680), self.winfo_reqheight()
-        self.geometry(f"+{(self.winfo_screenwidth() - w) // 2}+{max(0, (self.winfo_screenheight() - h) // 2 - 30)}")
+        self._center()
 
     def _path_field(self, parent, var, folder=False) -> ttk.Frame:
         frame = ttk.Frame(parent)
@@ -328,16 +363,10 @@ class App(tk.Tk):
         ttk.Button(frame, text="Browse…", command=browse).pack(side="left", padx=(8, 0))
         return frame
 
-    def _set_status(self, text: str, color: str) -> None:
-        self.status.configure(text=f"●  {text}", foreground=color)
-
     def _save_settings(self) -> None:
         SETTINGS.parent.mkdir(exist_ok=True)
         SETTINGS.write_text(json.dumps({"base": self.base.get(), "open_when_ready": self.open_when_ready}),
                             encoding="utf-8")
-
-    def _prefix(self) -> str:
-        return os.path.normpath(self.base.get()).rstrip("\\") + "\\" if self.base.get() else ""
 
     def _check_folders(self) -> None:
         from src.config import ensure_course_folders
@@ -352,13 +381,6 @@ class App(tk.Tk):
         made = ensure_course_folders(course)
         messagebox.showinfo("Course Summarizer", "Created:\n" + "\n".join(str(d.relative_to(course)) for d in made)
                             if made else "All folders are in place.")
-
-    def _courses(self) -> list[str]:
-        try:
-            return sorted(d.name for d in Path(self.base.get()).iterdir()
-                          if d.is_dir() and not d.name.startswith((".", "_")))
-        except OSError:
-            return []
 
     def _sync_mode(self) -> None:
         book = self.mode.get() == "book"
@@ -484,7 +506,4 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
-    if sys.platform == "win32":
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on scaled displays
-    App().mainloop()
+    launch(App)

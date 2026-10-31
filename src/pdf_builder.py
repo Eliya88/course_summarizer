@@ -146,22 +146,15 @@ def _tokenize_words(text: str, prefix: str = ""):
         words = content.split()
         i = 0
         while i < len(words):
-            if _HEBREW_RE.search(words[i]):
-                # A Hebrew prefix glued to English ("ו-Language Models") keeps
-                # the English words after it in the same chunk; split apart,
-                # they would be placed right-to-left and swap places.
-                j = i + 1
-                if _LATIN_TAIL_RE.search(words[i]):
-                    while j < len(words) and not _HEBREW_RE.search(words[j]):
-                        j += 1
-                tokens.append((" ".join(words[i:j]), is_bold))
-                i = j
-            else:
-                j = i
+            # A non-Hebrew word starts a run of the non-Hebrew words after it.
+            # So does a Hebrew prefix glued to English ("ו-Language Models");
+            # split apart, they would be placed right-to-left and swap places.
+            j = i + 1
+            if not _HEBREW_RE.search(words[i]) or _LATIN_TAIL_RE.search(words[i]):
                 while j < len(words) and not _HEBREW_RE.search(words[j]):
                     j += 1
-                tokens.append((" ".join(words[i:j]), is_bold))
-                i = j
+            tokens.append((" ".join(words[i:j]), is_bold))
+            i = j
     return tokens
 
 
@@ -365,7 +358,7 @@ def _write_formula_text_fallback(pdf: FPDF, text: str, size: float = 12.0) -> No
     garbled ordering (e.g. a leading Hebrew-adjacent period jumping to the
     front), so shaping is switched to LTR just for this one line."""
     pdf.set_font(FONT_FAMILY, size=size)
-    pdf.set_text_shaping(use_shaping_engine=True, direction="ltr", script="latn", language="en")
+    _shaping(pdf, True)
 
     h = size * 0.6
     pad_x, pad_y = 6.0, 3.0
@@ -389,7 +382,7 @@ def _write_formula_text_fallback(pdf: FPDF, text: str, size: float = 12.0) -> No
     pdf.multi_cell(w=box_w - 2 * pad_x, h=h, text=text, markdown=True, align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.set_y(box_y + height_used + 2 * pad_y)
 
-    pdf.set_text_shaping(use_shaping_engine=True, direction="rtl", script="hebr", language="he")
+    _shaping(pdf, False)
 
 
 def _write_formula(pdf: FPDF, text: str, top_gap: float = 4.0) -> None:
@@ -500,14 +493,13 @@ def _write_list_item(pdf: FPDF, text: str, size: float = 11.5, top_gap: float = 
 # Headings at these levels mark the start of a new "subject" - each one
 # starts on a fresh page (unless it's the very first thing on an
 # already-blank page, to avoid a pointless blank page before it).
-_SUBJECT_HEADING_LEVELS = {3}
 # The glossary and the past-exam question both close out a unit, and each
 # gets its own page like any other subject.
 _SUBJECT_HEADING_TEXT = {"מושגי מפתח", "שאלה ממבחנים קודמים"}
 
 
 def _write_heading(pdf: FPDF, text: str, level: int) -> None:
-    is_subject_heading = level in _SUBJECT_HEADING_LEVELS or text.strip() in _SUBJECT_HEADING_TEXT
+    is_subject_heading = level == 3 or text.strip() in _SUBJECT_HEADING_TEXT
     if is_subject_heading and pdf.page_dirty:
         pdf.add_page()
 
@@ -625,16 +617,11 @@ def build_pdf(sections: List[str], output_path: Path, course_name: str = None,
     (so sections[i] is chapter_titles[i - 1]). It drives both the running
     chapter header on every page and the cover's clickable contents list.
     """
-    if not FONT_PATH.exists():
-        raise FileNotFoundError(
-            f"Font not found at {FONT_PATH}. Expected assets/fonts/PlaypenSansHebrew.ttf."
-        )
-
     pdf = NotebookPDF(orientation="P", format="A4")
     pdf.set_margins(left=20, top=25, right=20)
     pdf.set_auto_page_break(auto=True, margin=18)
     _register_font(pdf)
-    pdf.set_text_shaping(use_shaping_engine=True, direction="rtl", script="hebr", language="he")
+    _shaping(pdf, False)
 
     # Link ids have to exist before the cover is drawn, but a chapter's real
     # target page is only known once that chapter starts. Seed them pointing
@@ -648,7 +635,6 @@ def build_pdf(sections: List[str], output_path: Path, course_name: str = None,
         chapter_idx = idx - 1  # sections[0] is the cover, which has no chapter
         pdf.chapter_label = titles[chapter_idx] if 0 <= chapter_idx < len(titles) else None
         pdf.add_page()
-        pdf.set_y(25)
         if 0 <= chapter_idx < len(chapter_links):
             pdf.set_link(chapter_links[chapter_idx], page=pdf.page_no(), y=0)
         _render_section(pdf, section_md, chapter_links=chapter_links if idx == 0 else None)

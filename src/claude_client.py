@@ -38,7 +38,7 @@ def make_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(timeout=REQUEST_TIMEOUT_S, max_retries=MAX_RETRIES)
 
 
-def upload_pdf(client, pdf_path: Path) -> dict:
+def pdf_document(pdf_path: Path) -> dict:
     """Returns the PDF as an inline document block. Claude reads it natively
     (text and page images), like the Gemini file upload did."""
     # ponytail: inline base64 - a request is capped at 32 MB, so a large
@@ -87,10 +87,6 @@ class Chat:
         # Full content, not just the text: thinking blocks must be sent back.
         self.messages.append({"role": "assistant", "content": response.content})
         return response
-
-
-def start_chat(client, model: str, system_instruction: str, max_output_tokens: int = 8192) -> Chat:
-    return Chat(client, model, system_instruction, max_output_tokens)
 
 
 def _text(response) -> str:

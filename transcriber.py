@@ -21,7 +21,6 @@ import queue
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -30,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from app import ACCENT, BG, BORDER, CARD, FONT, GREEN, MUTED, RED, ROOT, TEXT, _card, _style
+from app import ACCENT, BG, BORDER, CARD, FONT, GREEN, MUTED, RED, ROOT, TEXT, Window, _card, _load_settings, launch
 from src.config import _TRANSCRIPT_DIR_NAMES, _natural_key
 
 HOST = "bgu-login"  # ~/.ssh/config alias for slurm.bgu.ac.il, with the cluster key
@@ -87,13 +86,9 @@ def transcripts_dir(video: Path) -> Path:
     return d
 
 
-class App(tk.Tk):
+class App(Window):
     def __init__(self) -> None:
-        super().__init__()
-        self.title("Lecture Transcriber")
-        self.minsize(680, 0)
-        self.configure(background=BG)
-        _style(self)
+        super().__init__("Lecture Transcriber")
         px = float(self.tk.call("tk", "scaling"))
         s = ttk.Style(self)
         s.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=TEXT,
@@ -107,15 +102,9 @@ class App(tk.Tk):
         self.running = False
         self.stop_event = threading.Event()
         self.videos: list[Path] = []
-        try:
-            saved = json.loads(SETTINGS.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            saved = {}
+        saved = _load_settings(SETTINGS)
         if not saved.get("base"):  # first launch: start from the summarizer's base folder
-            try:
-                saved = {"base": json.loads((ROOT / "output" / "app_settings.json").read_text(encoding="utf-8"))["base"]}
-            except (OSError, ValueError, KeyError):
-                pass
+            saved = {"base": _load_settings(ROOT / "output" / "app_settings.json").get("base", "")}
         self.base = tk.StringVar(value=saved.get("base", ""))
         self.course = tk.StringVar(value=saved.get("course", ""))
 
@@ -163,23 +152,11 @@ class App(tk.Tk):
         self.status.pack(side="right")
         self._set_status("Ready", MUTED)
 
-        self.progress = ttk.Progressbar(page, maximum=100)
-        self.progress.pack(fill="x", pady=(4, 6))
-        info = ttk.Frame(page, style="Root.TFrame")
-        info.pack(fill="x")
-        self.stage = ttk.Label(info, style="Subtitle.TLabel")
-        self.stage.pack(side="left")
-        self.percent = ttk.Label(info, style="Percent.TLabel")
-        self.percent.pack(side="right")
+        self._progress_bar(page)
 
         self._scan()
         self.protocol("WM_DELETE_WINDOW", self._close)
-        self.update_idletasks()
-        w, h = max(self.winfo_reqwidth(), 680), self.winfo_reqheight()
-        self.geometry(f"+{(self.winfo_screenwidth() - w) // 2}+{max(0, (self.winfo_screenheight() - h) // 2 - 30)}")
-
-    def _set_status(self, text: str, color: str) -> None:
-        self.status.configure(text=f"●  {text}", foreground=color)
+        self._center()
 
     def _browse(self) -> None:
         path = filedialog.askdirectory(initialdir=self.base.get() or None)
@@ -187,16 +164,6 @@ class App(tk.Tk):
             self.base.set(str(Path(path)))
             self.course.set("")
             self._scan()
-
-    def _prefix(self) -> str:
-        return str(Path(self.base.get())).rstrip("\\") + "\\" if self.base.get() else ""
-
-    def _courses(self) -> list[str]:
-        try:
-            return sorted(d.name for d in Path(self.base.get()).iterdir()
-                          if d.is_dir() and not d.name.startswith((".", "_")))
-        except OSError:
-            return []
 
     def _scan(self) -> None:
         if self.running:  # the list is the run's progress; keep it until the run ends
@@ -379,7 +346,4 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
-    if sys.platform == "win32":
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on scaled displays
-    App().mainloop()
+    launch(App)

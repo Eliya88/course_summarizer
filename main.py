@@ -6,7 +6,6 @@ Usage:
     python main.py --course-dir "../NLP" --with-exercises # also summarize exercise/tutorial units
     python main.py --course-dir "../NLP" --with-tests     # add a past-exam practice page after each chapter
     python main.py --course courses/data_science.yaml     # or use a hand-written YAML config
-    python main.py --course courses/data_science.yaml --refresh-context
     python main.py --book "book.pdf" --chapters 1-5 --focus "ex1.pdf"  # chapters of a textbook, focused on an assignment
     python main.py --list-pdfs "Data Science/Lectures"   # helper to write configs
 
@@ -33,10 +32,8 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 # big textbooks); harmless, and it buries the progress output.
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
-sys.path.insert(0, str(Path(__file__).parent))
 
-from src.config import (attach_transcripts, discover_book_config, discover_course_config, load_course_config,
-                        parse_chapters)
+from src.config import attach_transcripts, discover_book_config, discover_course_config, load_course_config
 from src.pdf_builder import build_pdf
 from src.pipeline import run
 
@@ -55,7 +52,6 @@ def main() -> None:
     parser.add_argument("--course-dir", type=str, help="Path to a course folder containing Lectures/Exercises subfolders - auto-discovers units, no YAML needed")
     parser.add_argument("--course", type=str, help="Path to a course YAML config, e.g. courses/data_science.yaml")
     parser.add_argument("--no-cache", action="store_true", help="Re-call Claude for every unit even if a cached result exists")
-    parser.add_argument("--refresh-context", action="store_true", help="Rebuild the full-course text digest even if unchanged")
     parser.add_argument("--with-exercises", action="store_true", help="Also summarize exercise/tutorial units (lectures only by default)")
     parser.add_argument("--with-tests", action="store_true", help="After each chapter, add a practice page with a question from the course's past exams and a worked solution (needs an exams folder in the course directory)")
     parser.add_argument("--book", type=str, help="Path to a textbook PDF with chapter bookmarks - summarizes the --chapters given, shorter than a regular run")
@@ -81,7 +77,7 @@ def main() -> None:
     if args.course_dir:
         course = discover_course_config(Path(args.course_dir))
     elif args.book:
-        course = discover_book_config(Path(args.book), parse_chapters(args.chapters),
+        course = discover_book_config(Path(args.book), args.chapters,
                                       Path(args.focus) if args.focus else None)
     else:
         course = load_course_config(Path(args.course))
@@ -105,7 +101,6 @@ def main() -> None:
     sections = run(
         course,
         use_cache=not args.no_cache,
-        force_context=args.refresh_context,
         with_tests=args.with_tests,
     )
 

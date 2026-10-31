@@ -114,9 +114,6 @@ for options A and B.
 
 Flags:
 - `--no-cache` - re-call Claude for every unit even if cached.
-- `--refresh-context` - rebuild the full-course text digest (only needed if
-  you added/edited a source PDF and want the cross-reference context to
-  reflect it immediately; it also auto-rebuilds when file mtimes change).
 - `--with-exercises` - also summarize exercise/tutorial units. By default
   only the lecture units are summarized.
 - `--with-tests` - after each chapter, add a practice page holding one
