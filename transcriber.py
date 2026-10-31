@@ -46,7 +46,10 @@ RETRY, GIVE_UP = 30, 30 * 60  # seconds between tries while the connection is do
 # The job writes its .srt/.txt as it goes, so only submit.sh's exit code says they're whole.
 STATE = """cd ~/transcription; s={0}
 if [ -f logs/$s.rc ]; then
-  if [ "$(cat logs/$s.rc)" = 0 ] && [ -f output/$s.srt ] && [ -f output/$s.txt ]; then echo done
+  if [ "$(cat logs/$s.rc)" = 0 ] && [ -f output/$s.srt ] && [ -f output/$s.txt ]; then
+    echo done; j=$(grep -o 'job [0-9]*' logs/$s.submit | tail -n 1 | cut -d' ' -f2)
+    echo "$(grep -m 1 -o 'NVIDIA[^,]*' logs/whisper_he_$j.out 2>/dev/null)"  # the GPU, then the job's run time
+    echo "$(sacct -j "$j" -X -n -o Elapsed 2>/dev/null | xargs)"
   else echo failed; tail -n 5 logs/$s.submit; fi
 elif [ -f logs/$s.submit ]; then echo running; tail -n 1 logs/$s.submit
 elif [ -f ~/audio/$s.mp3 ]; then echo uploaded
@@ -147,7 +150,7 @@ class App(tk.Tk):
         self.tree.heading("lecture", text="LECTURE", anchor="w")
         self.tree.heading("status", text="STATUS", anchor="w")
         self.tree.column("lecture", width=int(px * 260))
-        self.tree.column("status", width=int(px * 160))
+        self.tree.column("status", width=int(px * 200))
         self.tree.pack(fill="x")
 
         actions = ttk.Frame(page, style="Root.TFrame")
@@ -261,6 +264,9 @@ class App(tk.Tk):
                     self._step(i, step)
                 self._wait(POLL)
                 state, detail = self._state(i, stem)
+            gpu, _, took = detail.partition("\n")
+            done = "  ·  ".join(["Done", *filter(None, (gpu.replace("NVIDIA GeForce ", ""),
+                                                        took.strip().removeprefix("00:")))])
             self._step(i, "Downloading")
             with tempfile.TemporaryDirectory() as tmp:
                 self._remote(i, ["scp", *SSH, f"{HOST}:transcription/output/{stem}.*", tmp])
@@ -268,7 +274,7 @@ class App(tk.Tk):
                 if not txt.exists():  # keep a transcript that's already there (maybe from another tool)
                     shutil.move(Path(tmp, stem + ".txt"), txt)
                 shutil.move(Path(tmp, stem + ".srt"), video.with_suffix(".srt"))  # last: marks the lecture done
-            self.events.put((i, "Done", 1.0))
+            self.events.put((i, done, 1.0))
         except Stopped:
             self.events.put((i, "Stopped", None))
         except Exception as e:  # one lecture failing shouldn't stop the others
@@ -334,13 +340,13 @@ class App(tk.Tk):
         now = time.monotonic()
         for i, (status, _, t0) in self.rows.items():
             elapsed = int(now - t0)
-            text = status if status in ("Waiting", "Done", "Failed", "Stopped") else \
+            text = status if status.startswith(("Waiting", "Done", "Failed", "Stopped")) else \
                 f"{status}  ·  {elapsed // 60}:{elapsed % 60:02d}"
             self.tree.set(str(i), "status", text)
         value = sum(r[1] for r in self.rows.values()) / len(self.rows)
         self.progress.configure(value=value * 100)
         self.percent.configure(text=f"{int(value * 100)}%")
-        done = sum(r[0] == "Done" for r in self.rows.values())
+        done = sum(r[0].startswith("Done") for r in self.rows.values())
         self.stage.configure(text=f"{done} of {len(self.rows)} transcribed")
         if finished:
             self._finished()
