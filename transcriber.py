@@ -43,9 +43,11 @@ POLL = 30  # seconds between checks on a running job
 RETRY, GIVE_UP = 30, 30 * 60  # seconds between tries while the connection is down, and how long to keep trying
 # How far a lecture got on the cluster, as its first line: done | failed (then the
 # log's end) | running (then submit.sh's last line) | uploaded | partial <bytes uploaded>.
+# The job writes its .srt/.txt as it goes, so only submit.sh's exit code says they're whole.
 STATE = """cd ~/transcription; s={0}
-if [ -f output/$s.srt ] && [ -f output/$s.txt ]; then echo done
-elif [ -f logs/$s.rc ]; then echo failed; tail -n 5 logs/$s.submit
+if [ -f logs/$s.rc ]; then
+  if [ "$(cat logs/$s.rc)" = 0 ] && [ -f output/$s.srt ] && [ -f output/$s.txt ]; then echo done
+  else echo failed; tail -n 5 logs/$s.submit; fi
 elif [ -f logs/$s.submit ]; then echo running; tail -n 1 logs/$s.submit
 elif [ -f ~/audio/$s.mp3 ]; then echo uploaded
 else echo partial $(stat -c %s ~/audio/$s.mp3.part 2>/dev/null || echo 0); fi"""
@@ -54,7 +56,7 @@ else echo partial $(stat -c %s ~/audio/$s.mp3.part 2>/dev/null || echo 0); fi"""
 # job; its exit code lands in logs/<stem>.rc.
 START = r"""s={0}; cd ~/transcription; mv -f ~/audio/$s.mp3.part ~/audio/$s.mp3 2>/dev/null
 rm -f logs/$s.rc; : > logs/$s.submit
-setsid nohup bash -c "bash submit.sh ~/audio/$s.mp3 > logs/$s.submit 2>&1; echo \$? > logs/$s.rc" \
+setsid nohup bash -c "bash submit.sh ~/audio/$s.mp3 > logs/$s.submit 2>&1; echo \$? > logs/$s.rc.tmp; mv logs/$s.rc.tmp logs/$s.rc" \
   > /dev/null 2>&1 < /dev/null &"""
 # Where each step starts on its lecture's share of the bar.
 STEPS = {"Converting to mp3": 0.0, "Uploading": 0.1, "Waiting for a GPU": 0.25, "Transcribing on the GPU": 0.3,
