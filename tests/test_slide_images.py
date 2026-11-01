@@ -133,3 +133,18 @@ def test_cases_formula_becomes_one_formula_per_case():
     assert rows == [r"f(x) = 1 \quad \text{if } x > 0", r"f(x) = 0 \quad \text{otherwise}"]
     assert all(pdf_builder._render_math_image(r) for r in rows)
     assert pdf_builder._split_cases("a + b") == ["a + b"]
+
+
+def test_template_background_is_not_a_figure(tmp_path):
+    background, figure = tmp_path / "bg.png", tmp_path / "figure.png"
+    Image.frombytes("RGB", (300, 200), os.urandom(300 * 200 * 3)).save(background)
+    Image.frombytes("RGB", (200, 100), os.urandom(200 * 100 * 3)).save(figure)
+    pdf = FPDF()
+    for images in ([background], [background, figure], [background], [background]):
+        pdf.add_page()
+        for i, img in enumerate(images):
+            pdf.image(str(img), x=0, y=60 * i, w=50)
+    deck = tmp_path / "deck.pdf"
+    pdf.output(str(deck))
+    assert pdf_utils.extract_main_image(deck, 1, tmp_path / "imgs") is None
+    assert Image.open(pdf_utils.extract_main_image(deck, 2, tmp_path / "imgs")).size == (200, 100)

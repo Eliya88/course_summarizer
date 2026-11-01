@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -78,18 +80,27 @@ def chapter_ranges(reader: PdfReader) -> List[Tuple[str, int, int]]:
     ]
 
 
+@lru_cache(maxsize=None)
+def _template_images(pdf_path: str) -> frozenset:
+    """Image bytes repeated on most pages of the deck: a slide-template
+    background or logo, never the figure a slide is about."""
+    pages = PdfReader(pdf_path).pages
+    counts = Counter(d for p in pages for d in {i.data for i in p.images})
+    return frozenset(d for d, c in counts.items() if c > max(2, len(pages) / 2))
+
+
 def extract_main_image(pdf_path: Path, page: int, out_dir: Path) -> Optional[Path]:
     """Saves the largest embedded raster image on 1-based `page` into
     `out_dir` and returns its path, or None if the page has no image big
     enough to be a real figure (or can't be read). Vector-drawn diagrams
     have no embedded image, so they're not picked up."""
-    # ponytail: picks by size only - a big slide-template background would win
-    # over the figure; skip images repeated on most pages if that shows up.
     if page < 1:
         return None
     try:
         images = PdfReader(str(pdf_path)).pages[page - 1].images
-        img = max((i for i in images if len(i.data) >= MIN_IMAGE_BYTES), key=lambda i: len(i.data), default=None)
+        background = _template_images(str(pdf_path))
+        img = max((i for i in images if len(i.data) >= MIN_IMAGE_BYTES and i.data not in background),
+                  key=lambda i: len(i.data), default=None)
         if img is None:
             return None
         out_dir.mkdir(parents=True, exist_ok=True)
