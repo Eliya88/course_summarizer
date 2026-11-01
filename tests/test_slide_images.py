@@ -75,6 +75,7 @@ def test_unsupported_latex_is_rewritten_for_mathtext():
         r"t_1 =^{\varepsilon} t_2 \iff |t_2 - t_1| \leq \varepsilon",
         r"f(x) \xrightarrow{\text{Fourier Transform}} F(\omega)",
         r"\Bigl( a \Bigr) \implies b",
+        r"MTTF = \frac{\#items\ tested}{\#items\ failed}",
     ]:
         parser.parse(f"${pdf_builder._to_mathtext(body)}$")  # raises if still unsupported
     assert pdf_builder._to_mathtext(r"\bigcup_i A_i") == r"\bigcup_i A_i"  # real commands untouched

@@ -301,6 +301,7 @@ _MATH_DPI = 300        # raster quality only; physical size is derived from this
 # command keeps the delimiter itself.
 _MATHTEXT_FIXES = [
     (re.compile(r"\\[Bb]igg?[lr]?(?![a-zA-Z])"), ""),
+    (re.compile(r"\\#"), r"{\\#}"),  # a bare \# doesn't parse, a braced one does
     (re.compile(r"\\iff(?![a-zA-Z])"), r"\\Leftrightarrow"),
     (re.compile(r"\\implies(?![a-zA-Z])"), r"\\Rightarrow"),
     (re.compile(r"\\x(right|left)arrow\{((?:[^{}]|\{[^{}]*\})*)\}"), r"\\overset{\2}{\\long\1arrow}"),
