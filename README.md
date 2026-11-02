@@ -141,7 +141,8 @@ Flags:
 `Transcriber.bat` (or `python transcriber.py`) opens a window where you pick
 a base folder and then a course in it from the list, like the summarizer
 app. It lists every `L<n>.mp4` in the course
-that has no `L<n>.srt` beside it, makes an mp3 of each with ffmpeg, runs the
+that has no `L<n>.srt` beside it (or the `L<n>.mp3`, when there's no video),
+makes an mp3 of each with ffmpeg unless there is one already, runs the
 Hebrew Whisper job on the BGU cluster (`~/transcription/submit.sh`, one GPU
 job per lecture, 3 at a time) and brings back the `.srt` next to the
 video and the `.txt` into the `Transcripts` folder beside it, where the

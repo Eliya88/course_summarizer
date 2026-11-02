@@ -1,7 +1,7 @@
 """Desktop window: transcribe a folder's lecture recordings on the BGU cluster.
 
-Finds every L<n>.mp4 under the chosen folder with no L<n>.srt beside it,
-makes an mp3 of it (ffmpeg), runs the Hebrew Whisper GPU job on the cluster
+Finds every L<n>.mp4 (or, with no video, L<n>.mp3) under the chosen folder
+with no L<n>.srt beside it, makes an mp3 of it if missing (ffmpeg), runs the Hebrew Whisper GPU job on the cluster
 (~/transcription/submit.sh) and brings back the .srt, next to the
 video, and the .txt, into the Transcripts folder beside it, where main.py
 picks it up.
@@ -70,9 +70,10 @@ class Stopped(Exception):
 
 
 def pending(folder: Path) -> list[Path]:
-    """L<n>.mp4 files under `folder` with no .srt of the same name beside them."""
-    return sorted((p for p in folder.rglob("*.mp4")
-                   if LECTURE.fullmatch(p.stem) and not p.with_suffix(".srt").exists()),
+    """L<n>.mp4 files under `folder` with no .srt of the same name beside them (or the L<n>.mp3, if there's no video)."""
+    return sorted((p for p in folder.rglob("*.mp[34]")
+                   if LECTURE.fullmatch(p.stem) and not p.with_suffix(".srt").exists()
+                   and not (p.suffix == ".mp3" and p.with_suffix(".mp4").exists())),
                   key=lambda p: _natural_key(str(p)))
 
 
@@ -111,7 +112,7 @@ class App(Window):
         page = ttk.Frame(self, style="Root.TFrame", padding=(20, 16, 20, 20))
         page.pack(fill="both", expand=True)
         ttk.Label(page, text="Lecture Transcriber", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(page, text="Transcribe every lecture video (L1.mp4, L2.mp4, …) that has no subtitles yet.",
+        ttk.Label(page, text="Transcribe every lecture recording (L1.mp4, L2.mp3, …) that has no subtitles yet.",
                   style="Subtitle.TLabel").pack(anchor="w", pady=(0, 14))
 
         # Same layout as the summarizer: a base folder, then a course in it picked from the list.
@@ -181,7 +182,7 @@ class App(Window):
     def start(self) -> None:
         self._scan()
         if not self.videos:
-            messagebox.showinfo("Lecture Transcriber", "Every L<n>.mp4 in this course already has an .srt."
+            messagebox.showinfo("Lecture Transcriber", "Every L<n>.mp4/.mp3 in this course already has an .srt."
                                 if self.course.get() else "Choose a course first.")
             return
         self.running = True
