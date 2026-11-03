@@ -292,7 +292,10 @@ def ensure_course_folders(course_dir: Path) -> List[Path]:
     if not _find_subdir(course_dir, _LECTURE_DIR_NAMES):
         created.append(course_dir / "Lectures")
     if not any(d.is_dir() and d.name.lower() in _TRANSCRIPT_DIR_NAMES for d in course_dir.rglob("*")):
-        created.append(course_dir / "Recordings" / "Transcripts")
+        # Beside recordings that are already there (where the transcriber puts its
+        # .txt), not in a second Recordings tree.
+        recording = next((p for p in course_dir.rglob("*") if p.suffix.lower() in (".mp4", ".m4a", ".mp3")), None)
+        created.append((recording.parent if recording else course_dir / "Recordings") / "Transcripts")
     for d in created:
         d.mkdir(parents=True)
     return created

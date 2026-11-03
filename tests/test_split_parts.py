@@ -259,3 +259,8 @@ def test_ensure_course_folders_creates_only_what_is_missing(tmp_path):
     (other / "slides").mkdir(parents=True)
     (other / "Audio" / "תמלול").mkdir(parents=True)
     assert ensure_course_folders(other) == []
+    nested = tmp_path / "nested"
+    (nested / "Lectures" / "Recordings").mkdir(parents=True)
+    (nested / "Lectures" / "Recordings" / "L1.mp4").write_bytes(b"x")
+    assert ensure_course_folders(nested) == [nested / "Lectures" / "Recordings" / "Transcripts"]
+    assert (nested / "Lectures" / "Recordings" / "L1.mp4").exists() and not (nested / "Recordings").exists()
