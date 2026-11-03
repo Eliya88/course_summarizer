@@ -10,6 +10,8 @@ from typing import List
 
 import anthropic
 
+from .log import log
+
 # Hard ceiling per HTTP request, so a stalled connection fails loudly
 # instead of hanging forever.
 REQUEST_TIMEOUT_S = 10 * 60
@@ -36,7 +38,7 @@ def make_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(timeout=REQUEST_TIMEOUT_S, max_retries=MAX_RETRIES)
 
 
-def upload_pdf(client, pdf_path: Path) -> dict:
+def pdf_document(pdf_path: Path) -> dict:
     """Returns the PDF as an inline document block. Claude reads it natively
     (text and page images), like the Gemini file upload did."""
     # ponytail: inline base64 - a request is capped at 32 MB, so a large
@@ -46,6 +48,15 @@ def upload_pdf(client, pdf_path: Path) -> dict:
         "type": "document",
         "source": {"type": "base64", "media_type": "application/pdf", "data": data},
         "title": pdf_path.name,
+    }
+
+
+def text_document(path: Path) -> dict:
+    """A .txt file (a lecture transcript) as a plain-text document block."""
+    return {
+        "type": "document",
+        "source": {"type": "text", "media_type": "text/plain", "data": path.read_text(encoding="utf-8-sig")},
+        "title": path.name,
     }
 
 
@@ -78,10 +89,6 @@ class Chat:
         return response
 
 
-def start_chat(client, model: str, system_instruction: str, max_output_tokens: int = 8192) -> Chat:
-    return Chat(client, model, system_instruction, max_output_tokens)
-
-
 def _text(response) -> str:
     return "".join(b.text for b in response.content if b.type == "text")
 
@@ -94,7 +101,7 @@ def send(chat, parts: List) -> str:
     for _ in range(MAX_CONTINUATIONS):
         if response.stop_reason != "max_tokens":
             break
-        print("  [continue] reply hit the output limit - asking Claude to continue it")
+        log("  [continue] reply hit the output limit - asking Claude to continue it")
         response = chat.send_message([CONTINUE_PROMPT])
         # ponytail: plain concatenation - a cut mid-word can leave a stray
         # space or doubled word at the seam; dedupe the overlap if it shows up.

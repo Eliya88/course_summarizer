@@ -1,6 +1,6 @@
-# exam_prep_summarizer
+# course_summarizer
 
-Turns a course's lecture + exercise PDFs into one exam-study PDF, using the
+Turns a course's lecture + exercise PDFs into one study PDF, using the
 Claude API (Claude Haiku 5.5). Works for any course with a similar folder layout - not just
 Data Science.
 
@@ -89,14 +89,31 @@ Then run:
 python main.py --course courses/data_science.yaml
 ```
 
-Output PDF lands in `output/<course_name>/<course_name>_exam_prep.pdf`
-either way.
+### Option C: chapters of a textbook (book mode)
+
+For a book that isn't a course folder, pick chapters by number and,
+optionally, an assignment to focus on:
+```
+python main.py --book "path/to/book.pdf" --chapters 1-5 --focus "path/to/ex1.pdf"
+```
+
+- `--chapters` takes `1-5`, `3`, or `1,3-4`. Chapters are found from the
+  PDF's bookmarks (a book with parts uses the chapters inside them), and
+  each one is cut out once into `output/<book>/cache/chapters/`.
+- The summary is shorter than a regular run (about one page per 4-5 book
+  pages), each chapter is one chat, and no full-course digest is sent.
+- `--focus` sends the assignment's text along: topics it relies on get
+  depth and worked examples, the rest stays brief, and its own questions
+  are never solved.
+
+The PDF is written to `output/<book>/<book>_ch1-5_summary.pdf` and copied
+next to the book.
+
+Output PDF lands in `output/<course_name>/<course_name>_summary.pdf`
+for options A and B.
 
 Flags:
 - `--no-cache` - re-call Claude for every unit even if cached.
-- `--refresh-context` - rebuild the full-course text digest (only needed if
-  you added/edited a source PDF and want the cross-reference context to
-  reflect it immediately; it also auto-rebuilds when file mtimes change).
 - `--with-exercises` - also summarize exercise/tutorial units. By default
   only the lecture units are summarized.
 - `--with-tests` - after each chapter, add a practice page holding one
@@ -118,6 +135,37 @@ Flags:
   cached separately from the chapter summaries, so turning the flag on
   later doesn't re-summarize anything, and tweaking `EXAM_PROMPT` only
   invalidates the practice pages.
+
+## Transcribing lecture recordings
+
+The app (`Course Summarizer.bat`, or `python app.py`) has two tabs:
+**Summary** and **Transcription**. Both use the base folder at the top of the
+window, and each tab keeps its own course. In the Transcription tab, pick a
+course from the list. It lists every `L<n>.mp4` in the course
+that has no `L<n>.srt` beside it (or the `L<n>.m4a` or `L<n>.mp3`, e.g. a phone recording, when there's no
+video),
+makes an mp3 of each with ffmpeg unless there is one already, runs the
+Hebrew Whisper job on the BGU cluster (`~/transcription/submit.sh`, one GPU
+job per lecture, 3 at a time) and brings back the `.srt` next to the
+video and the `.txt` into the `Transcripts` folder beside it, where the
+summarizer picks it up. An existing `.txt` there is kept. Needs `ffmpeg` on
+PATH and the `bgu-login` host (with its key) in `~/.ssh/config`.
+
+Recordings are named for the order they were given in: `L1.mp4` is the
+first lecture, `L2.mp4` the second. The summarizer gives each transcript to
+the slide deck with the same number. When a recording doesn't line up with
+the decks, rename its transcript by hand for the decks it covers: `L1-2.txt`
+is attached to both the L1 and L2 decks, and `L1,3.txt` to L1 and L3 (the
+`.srt` keeps the recording's name, so the transcriber won't redo it). Each deck then
+takes only the passages about its own slides, and a deck covered by two
+recordings (`L1-2` and `L2-3`) gets both. A shared transcript is sent with
+every deck it covers, so it costs that much more.
+
+If the VPN drops, the app keeps retrying for 30 minutes. After that, or
+after Stop, press Run again and each lecture picks up where it left off: a
+half-done upload continues from the bytes already on the cluster, and a job
+that was already submitted keeps running on its own and isn't submitted
+again. Only the results are downloaded.
 
 ## Cost
 

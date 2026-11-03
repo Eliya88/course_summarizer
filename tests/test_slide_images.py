@@ -1,11 +1,8 @@
 import os
-import sys
 from pathlib import Path
 
 from fpdf import FPDF
 from PIL import Image
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src import pdf_builder, pdf_utils, pipeline
 
@@ -60,6 +57,14 @@ def test_empty_heading_is_skipped(monkeypatch):
     assert headings == ["2. Real"]
 
 
+def test_deep_heading_is_a_sub_heading_not_text(monkeypatch):
+    seen = []
+    monkeypatch.setattr(pdf_builder, "_write_heading", lambda pdf, text, level: seen.append((text, level)))
+    monkeypatch.setattr(pdf_builder, "_write_paragraph", lambda pdf, text: seen.append("para:" + text))
+    pdf_builder._render_section(None, "#### Word2Vec\n##### CBOW")
+    assert seen == [("Word2Vec", 4), ("CBOW", 4)]
+
+
 def test_unsupported_latex_is_rewritten_for_mathtext():
     import matplotlib
     from matplotlib.mathtext import MathTextParser
@@ -70,6 +75,85 @@ def test_unsupported_latex_is_rewritten_for_mathtext():
         r"t_1 =^{\varepsilon} t_2 \iff |t_2 - t_1| \leq \varepsilon",
         r"f(x) \xrightarrow{\text{Fourier Transform}} F(\omega)",
         r"\Bigl( a \Bigr) \implies b",
+        r"MTTF = \frac{\#items\ tested}{\#items\ failed}",
+        r"z = \begin{bmatrix} -\,w_1^T\,- \\ -\,w_2^T\,- \end{bmatrix} \begin{pmatrix} a & b \\ c & d \end{pmatrix}",
     ]:
         parser.parse(f"${pdf_builder._to_mathtext(body)}$")  # raises if still unsupported
     assert pdf_builder._to_mathtext(r"\bigcup_i A_i") == r"\bigcup_i A_i"  # real commands untouched
+
+
+def test_long_english_quote_wraps_inside_the_margins():
+    pdf = pdf_builder.NotebookPDF()
+    pdf_builder._register_font(pdf)
+    pdf.add_page()
+    cells = []
+    pdf.cell = lambda w, h, text: cells.append((pdf.get_x(), w))
+    quote = '"Write an essay about how aluminium cans are used in food storage. Include keywords waste, material and meal."'
+    pdf_builder._write_richtext(pdf, "דוגמה: " + quote, size=11.5, prefix="• ")
+    assert len(cells) > 3  # the quote was split across lines
+    assert all(x >= pdf.l_margin - 0.01 and x + w <= pdf.w - pdf.r_margin + 0.01 for x, w in cells)
+
+
+def test_english_after_a_hebrew_prefix_stays_in_one_chunk():
+    words = [w for w, _ in pdf_builder._tokenize_words("Tokens ו-Language Models של **ה-BPE** מודל")]
+    assert words == ["Tokens", "ו-Language Models", "של", "ה-BPE", "מודל"]
+
+
+def test_list_number_before_english_stays_its_own_token():
+    words = [w for w, _ in pdf_builder._tokenize_words("3. ImageNet ורשתות")]
+    assert words == ["3.", "ImageNet", "ורשתות"]
+    assert [w for w, _ in pdf_builder._tokenize_words("**3. ImageNet** ורשתות")][:2] == ["3.", "ImageNet"]
+    assert [w for w, _ in pdf_builder._tokenize_words("1.5 GPUs")] == ["1.5 GPUs"]  # not a list number
+
+
+def test_chapter_topic_list_links_to_each_topic(tmp_path):
+    pypdf = __import__("pypdf")
+    section = "# Unit\n\n## נושאים:\n\n1. First\n2. Second\n\n### 1. First\n\nbody\n\n### 2. Second\n\nbody"
+    out = pdf_builder.build_pdf(["# Cover", section], tmp_path / "out.pdf", chapter_titles=["Unit"])
+    reader = pypdf.PdfReader(out)
+    page_of = {p.indirect_reference.idnum: i for i, p in enumerate(reader.pages)}
+    # Page 2 is the chapter page with the topic list; topics start pages 3 and 4.
+    targets = [page_of[a.get_object()["/Dest"][0].idnum] for a in reader.pages[1]["/Annots"]]
+    assert targets == [2, 3]
+
+
+def test_inline_latex_becomes_plain_text():
+    plain = lambda s: pdf_builder._INLINE_MATH_RE.sub(lambda m: pdf_builder._plain_math(m[1]), s)
+    assert plain("טמפרטורה $T > 0$ בחזקה $1/T$") == "טמפרטורה T > 0 בחזקה 1/T"
+    assert plain(r"רצף $x_1, \ldots, x_{t-1}$ ו-$\frac{1}{|V|}$") == "רצף x_1, …, x_(t-1) ו-1/(|V|)"
+    assert plain(r"$P_{\mathrm{LM}}(W)$ עם $\lambda$") == "P_(LM)(W) עם λ"
+    code = "'for', '$', '1' ... for $1 billion"
+    assert plain(code) == code
+
+
+def test_latin_and_math_runs_are_drawn_left_to_right():
+    p = pdf_builder._bidi_pieces
+    assert p("T → ∞") == [("T → ∞", True)]
+    assert p("0 < k < 1") == [("0 < k < 1", True)]
+    assert p("T = 1.5 ו-T = 2") == [("T = 1.5", True), (" ו-", False), ("T = 2", True)]
+    assert p("מ-1.") == [("מ-", False), ("1", True), (".", False)]
+    assert p("Models:") == [("Models", True), (":", False)]  # the colon stays on the RTL side
+    assert p("שלום,") == [("שלום", False), (",", False)]
+    assert pdf_builder._tokenize_words("**T → ∞**: טקסט", prefix="• ")[:2] == [("•", False), ("T → ∞:", True)]
+
+
+def test_cases_formula_becomes_one_formula_per_case():
+    rows = pdf_builder._split_cases(r"f(x) = \begin{cases} 1 & \text{if } x > 0 \\ 0 & \text{otherwise} \end{cases}")
+    assert rows == [r"f(x) = 1 \quad \text{if } x > 0", r"f(x) = 0 \quad \text{otherwise}"]
+    assert all(pdf_builder._render_math_image(r) for r in rows)
+    assert pdf_builder._split_cases("a + b") == ["a + b"]
+
+
+def test_template_background_is_not_a_figure(tmp_path):
+    background, figure = tmp_path / "bg.png", tmp_path / "figure.png"
+    Image.frombytes("RGB", (300, 200), os.urandom(300 * 200 * 3)).save(background)
+    Image.frombytes("RGB", (200, 100), os.urandom(200 * 100 * 3)).save(figure)
+    pdf = FPDF()
+    for images in ([background], [background, figure], [background], [background]):
+        pdf.add_page()
+        for i, img in enumerate(images):
+            pdf.image(str(img), x=0, y=60 * i, w=50)
+    deck = tmp_path / "deck.pdf"
+    pdf.output(str(deck))
+    assert pdf_utils.extract_main_image(deck, 1, tmp_path / "imgs") is None
+    assert Image.open(pdf_utils.extract_main_image(deck, 2, tmp_path / "imgs")).size == (200, 100)
