@@ -40,16 +40,18 @@ LECTURE = re.compile(r"L\d+", re.I)
 POLL = 30  # seconds between checks on a running job
 RETRY, GIVE_UP = 30, 30 * 60  # seconds between tries while the connection is down, and how long to keep trying
 # How far a lecture got on the cluster, as its first line: done | failed (then the
-# log's end) | running (then submit.sh's last line) | uploaded | partial <bytes uploaded>.
+# log's end) | running (then submit.sh's last line, then the GPU once the job has one) |
+# uploaded | partial <bytes uploaded>.
 # The job writes its .srt/.txt as it goes, so only submit.sh's exit code says they're whole.
 STATE = """cd ~/transcription; s={0}
+j=$(grep -o 'job [0-9]*' logs/$s.submit 2>/dev/null | tail -n 1 | cut -d' ' -f2)
+gpu=$(grep -m 1 -o 'NVIDIA[^,]*' logs/whisper_he_$j.out 2>/dev/null)  # the job logs it as it starts
 if [ -f logs/$s.rc ]; then
   if [ "$(cat logs/$s.rc)" = 0 ] && [ -f output/$s.srt ] && [ -f output/$s.txt ]; then
-    echo done; j=$(grep -o 'job [0-9]*' logs/$s.submit | tail -n 1 | cut -d' ' -f2)
-    echo "$(grep -m 1 -o 'NVIDIA[^,]*' logs/whisper_he_$j.out 2>/dev/null)"  # the GPU, then the job's run time
+    echo done; echo "$gpu"  # the GPU, then the job's run time
     echo "$(sacct -j "$j" -X -n -o Elapsed 2>/dev/null | xargs)"
   else echo failed; tail -n 5 logs/$s.submit; fi
-elif [ -f logs/$s.submit ]; then echo running; tail -n 1 logs/$s.submit
+elif [ -f logs/$s.submit ]; then echo running; tail -n 1 logs/$s.submit; echo "$gpu"
 elif [ -f ~/audio/$s.mp3 ]; then echo uploaded
 else echo partial $(stat -c %s ~/audio/$s.mp3.part 2>/dev/null || echo 0); fi"""
 # Starts submit.sh detached, so a dropped connection doesn't kill it. It takes an
@@ -209,7 +211,9 @@ class TranscriberPage(Page):
                 if state != "running":  # not started yet, or failed on an earlier run
                     self._remote(i, ["ssh", *SSH, HOST, START.format(stem)])
                     started = True
-                step = "Transcribing on the GPU" if "RUNNING" in detail else "Waiting for a GPU"
+                gpu = detail.partition("\n")[2].strip().replace("NVIDIA GeForce ", "")
+                step = ("Transcribing on the GPU" if "RUNNING" in detail else "Waiting for a GPU") \
+                    + (f" ({gpu})" if gpu else "")
                 if self.current.get(i) != step:
                     self._step(i, step)
                 self._wait(POLL)
@@ -233,7 +237,7 @@ class TranscriberPage(Page):
 
     def _step(self, i: int, step: str) -> None:
         self.current[i] = step
-        self.events.put((i, step, STEPS[step]))
+        self.events.put((i, step, STEPS[step.split(" (")[0]]))  # "Transcribing on the GPU (RTX 3090)"
 
     def _state(self, i: int, stem: str) -> tuple[str, str]:
         state, _, detail = self._remote(i, ["ssh", *SSH, HOST, STATE.format(stem)]).strip().partition("\n")
