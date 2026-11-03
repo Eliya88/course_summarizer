@@ -56,8 +56,8 @@ class Progress:
     lines a step eases toward its end, so the bar keeps moving but never
     overshoots; cached chapters jump straight to their end."""
 
-    def __init__(self, with_tests: bool) -> None:
-        self.exam = with_tests
+    def __init__(self, with_tests: bool, unit: str = "Lecture") -> None:
+        self.exam, self.unit = with_tests, unit
         self.units = 1
         self.chapters: dict[int, Chapter] = {}
         self.shown = 0.0
@@ -73,7 +73,7 @@ class Progress:
             n = int(m[1])
             c = self.chapters.setdefault(n, Chapter())
             if label := c.feed(m[2].strip(), 1 - EXAM if self.exam else 1.0):
-                self.label = f"Chapter {n} of {self.units}  ·  {label}"
+                self.label = f"{self.unit} {n} of {self.units}  ·  {label}"
         elif m := re.match(r"Course: .*units: (\d+)", s):
             self.units = max(1, int(m[1]))
         elif s.startswith("[course_context]"):
@@ -455,7 +455,7 @@ class SummaryPage(Page):
         if args is None:
             return
         self.output: list[str] = []
-        self.tracker = Progress(with_tests="--with-tests" in args)
+        self.tracker = Progress(with_tests="--with-tests" in args, unit="Chapter" if "--book" in args else "Lecture")
         self.stopped = False
         self.pdf_path = None
         self.open_btn.configure(state="normal", text=self._armed_text())
