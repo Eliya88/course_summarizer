@@ -150,6 +150,14 @@ video and the `.txt` into the `Transcripts` folder beside it, where the
 summarizer picks it up. An existing `.txt` there is kept. Needs `ffmpeg` on
 PATH and the `bgu-login` host (with its key) in `~/.ssh/config`.
 
+The summarizer gives each transcript to the slide deck with the same lecture
+number. When a recording doesn't line up with the decks, name it for the
+decks it covers: `L1-2.mp4` (or just the transcript, `L1-2.txt`) is attached
+to both the L1 and L2 decks, and `L1,3.txt` to L1 and L3. Each deck then
+takes only the passages about its own slides, and a deck covered by two
+recordings (`L1-2` and `L2-3`) gets both. A shared transcript is sent with
+every deck it covers, so it costs that much more.
+
 If the VPN drops, the app keeps retrying for 30 minutes. After that, or
 after Stop, press Run again and each lecture picks up where it left off: a
 half-done upload continues from the bytes already on the cluster, and a job

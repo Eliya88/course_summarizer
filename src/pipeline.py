@@ -116,8 +116,11 @@ def _system_instruction(course: CourseConfig, unit: Optional[Unit] = None) -> st
     extra = prompts.BOOK_NOTE if course.book else ""
     if course.focus:
         extra += prompts.FOCUS_NOTE.format(focus=course.focus)
-    if unit and unit.transcript_file:
+    if unit and unit.transcript_files:
         extra += prompts.TRANSCRIPT_NOTE if unit.lecture_files else prompts.TRANSCRIPT_ONLY_NOTE
+        if unit.lecture_files and unit.other_decks:
+            other = "\n\n".join(pdf_utils.extract_text(course.lectures_dir / f) for f in unit.other_decks)
+            extra += prompts.TRANSCRIPT_SHARED_NOTE.format(other=other[:LATER_SLIDES_MAX_CHARS].strip())
     if course.instructions:
         extra += prompts.INSTRUCTIONS_NOTE.format(instructions=course.instructions)
     return prompts.SYSTEM_INSTRUCTION.format(course_name=course.course_name, extra=extra)
@@ -248,8 +251,8 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     missing = [p for p in unit.source_paths(course) if not p.exists()]
     for m in missing:
         log(f"  [warn] configured file not found, skipping: {m}")
-    transcript = unit.transcript_path(course)
-    if not source_paths and not transcript:
+    transcripts = unit.transcript_paths(course)
+    if not source_paths and not transcripts:
         raise FileNotFoundError(f"No source PDFs found for unit '{unit.name}'")
 
     chunk_dir = course.output_dir / "cache" / "chunks"
@@ -259,8 +262,8 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     parts = _group_parts(per_file) or [[]]
     # The whole transcript goes with every part: it has no timestamps to cut
     # it at the slides' page ranges, so the prompt picks the matching passages.
-    transcript_doc = claude_client.text_document(transcript) if transcript else None
-    transcript_words = len(transcript_doc["source"]["data"].split()) if transcript_doc else 0
+    transcript_docs = [claude_client.text_document(t) for t in transcripts]
+    transcript_words = sum(len(d["source"]["data"].split()) for d in transcript_docs)
 
     system_instruction = _system_instruction(course, unit)
     all_titles, section_bodies, glossaries = [], [], []
@@ -271,12 +274,12 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
             log(f"  Part {k}/{len(parts)}: using cached result")
             titles, bodies, glossary = json.loads(part_cache.read_text(encoding="utf-8"))
         else:
-            names = [p.name for p in part] + ([transcript.name] if transcript else [])
+            names = [p.name for p in part + transcripts]
             log(f"  Part {k}/{len(parts)}: uploading {', '.join(names)} to Claude...")
             uploaded_files = [claude_client.pdf_document(p) for p in part]
             later_slides = ""
-            if transcript_doc:
-                uploaded_files.append(transcript_doc)
+            if transcript_docs:
+                uploaded_files += transcript_docs
                 later_slides = "\n\n".join(
                     pdf_utils.extract_text(p) for later in parts[k:] for p in later)[:LATER_SLIDES_MAX_CHARS]
             titles, bodies, glossary = _summarize_part(

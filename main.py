@@ -87,8 +87,8 @@ def main() -> None:
         print(f"  Transcripts: {n_transcripts} from {course.transcripts_dir}")
 
     if not args.with_exercises:
-        excluded = [u for u in course.units if not (u.lecture_files or u.transcript_file)]
-        course.units = [u for u in course.units if u.lecture_files or u.transcript_file]
+        excluded = [u for u in course.units if not (u.lecture_files or u.transcript_files)]
+        course.units = [u for u in course.units if u.lecture_files or u.transcript_files]
         for u in excluded:
             print(f"  skipping exercise unit (pass --with-exercises to include): {u.name}")
 

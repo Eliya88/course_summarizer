@@ -13,6 +13,8 @@ BOOK_PROMPT_VERSION = "b3-question-refs"
 TRANSCRIPT_PROMPT_VERSION = "t4-beyond-slides"
 # Bumped on its own for units with a transcript and no slides.
 TRANSCRIPT_ONLY_PROMPT_VERSION = "to1-no-digest-content"
+# Bumped on its own for decks that share a recording with another deck.
+TRANSCRIPT_SHARED_PROMPT_VERSION = "ts1-other-decks"
 
 # Versions the past-exam question blocks separately from the summary prompts
 # above, so tuning EXAM_PROMPT only invalidates cached exam pages and leaves
@@ -141,6 +143,14 @@ terms in it are misheard: write each one in its correct form, using the course d
 of the subject, and leave out a term you cannot identify rather than guess. Use the digest only for that \
 and for connecting to other lectures: never add a topic, scholar, argument or example the transcript does \
 not discuss. There are no figures, so never write the "@@IMG@@" marker.""" + TRANSCRIPT_NOISE
+
+# Added to TRANSCRIPT_NOTE when a recording ran over more than one deck
+# (named for a range, e.g. "L1-2.txt").
+TRANSCRIPT_SHARED_NOTE = """ The recordings do not line up with the decks: an attached transcript also \
+covers other lectures' slides, and this deck's material may be spread over several attached transcripts. \
+Take the passages about this deck's slides from wherever they are, and leave out the passages about the \
+other lectures' slides, whose text is:
+{other}"""
 
 # Agenda and length rules for a unit with a transcript, used in place of (or,
 # with slides, on top of) the slide rules above.

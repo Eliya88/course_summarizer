@@ -123,7 +123,7 @@ def test_later_part_with_transcript_skips_earlier_topics(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pipeline.claude_client, "send", fake_send)
 
-    pipeline.process_unit(None, course, Unit(name="L1", lecture_files=["L1.pdf"], transcript_file="L1.txt"),
+    pipeline.process_unit(None, course, Unit(name="L1", lecture_files=["L1.pdf"], transcript_files=["L1.txt"]),
                           digest="d", use_cache=False)
 
     assert len(agendas) == 2
@@ -177,11 +177,38 @@ def test_transcripts_join_their_lecture_or_become_their_own(tmp_path):
     course = config.discover_course_config(tmp_path)
 
     assert config.attach_transcripts(course) == 2
-    assert [(u.name, u.lecture_files, u.transcript_file) for u in course.units] == [
-        ("L1 - Intro", ["L1 - Intro.pdf"], "L1.txt"),
-        ("L2", [], "L2.txt"),
-        ("L3", ["L3.pdf"], ""),
+    assert [(u.name, u.lecture_files, u.transcript_files) for u in course.units] == [
+        ("L1 - Intro", ["L1 - Intro.pdf"], ["L1.txt"]),
+        ("L2", [], ["L2.txt"]),
+        ("L3", ["L3.pdf"], []),
     ]
+
+
+def test_lecture_keys_read_ranges():
+    assert config._lecture_keys("L1 - Intro") == [1]
+    assert config._lecture_keys("L1-3") == config._lecture_keys("L1-L3") == [1, 2, 3]
+    assert config._lecture_keys("L1,3") == [1, 3]
+    assert config._lecture_keys("Intro") == ["intro"]
+
+
+def test_a_recording_named_for_a_range_goes_to_each_deck(tmp_path, monkeypatch):
+    (tmp_path / "Lectures").mkdir()
+    for n in (1, 2, 3):
+        make_pdf(tmp_path / "Lectures" / f"L{n}.pdf", 1)
+    (tmp_path / "Transcripts").mkdir()
+    for name in ("L1-2.txt", "L2-3.txt"):
+        (tmp_path / "Transcripts" / name).write_text("x", encoding="utf-8")
+    course = config.discover_course_config(tmp_path)
+
+    config.attach_transcripts(course)
+    assert [(u.transcript_files, u.other_decks) for u in course.units] == [
+        (["L1-2.txt"], ["L2.pdf"]),
+        (["L1-2.txt", "L2-3.txt"], ["L1.pdf", "L3.pdf"]),
+        (["L2-3.txt"], ["L2.pdf"]),
+    ]
+    monkeypatch.setattr(pipeline.pdf_utils, "extract_text", lambda p: f"text of {p.name}")
+    system = pipeline._system_instruction(course, course.units[0])
+    assert pipeline.prompts.TRANSCRIPT_SHARED_NOTE.format(other="text of L2.pdf") in system
 
 
 def test_transcript_only_unit_is_one_chat_over_the_text(tmp_path, monkeypatch):
@@ -197,7 +224,7 @@ def test_transcript_only_unit_is_one_chat_over_the_text(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline.claude_client, "Chat", lambda client, model, system, max_tokens: systems.append(system))
     monkeypatch.setattr(pipeline.claude_client, "send", lambda chat, parts: sends.append(parts) or "1. A\n2. B")
 
-    pipeline.process_unit(None, course, Unit(name="L2", transcript_file="L2.txt"), digest="d", use_cache=False)
+    pipeline.process_unit(None, course, Unit(name="L2", transcript_files=["L2.txt"]), digest="d", use_cache=False)
 
     assert len(systems) == 1 and pipeline.prompts.TRANSCRIPT_ONLY_NOTE in systems[0]
     agenda, doc = sends[0]

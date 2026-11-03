@@ -11,7 +11,8 @@ import yaml
 from pypdf import PdfReader
 
 from . import pdf_utils
-from .prompts import BOOK_PROMPT_VERSION, PROMPT_VERSION, TRANSCRIPT_ONLY_PROMPT_VERSION, TRANSCRIPT_PROMPT_VERSION
+from .prompts import (BOOK_PROMPT_VERSION, PROMPT_VERSION, TRANSCRIPT_ONLY_PROMPT_VERSION, TRANSCRIPT_PROMPT_VERSION,
+                      TRANSCRIPT_SHARED_PROMPT_VERSION)
 
 DEFAULT_MODEL = "claude-haiku-5-5"
 
@@ -56,11 +57,15 @@ class Unit:
     name: str
     lecture_files: List[str] = field(default_factory=list)
     exercise_files: List[str] = field(default_factory=list)
-    # A .txt transcript of the lecture recording, in course.transcripts_dir.
-    transcript_file: str = ""
+    # .txt transcripts of the lecture recordings that cover these slides, in
+    # course.transcripts_dir. Usually one; a recording named for a range
+    # ("L1-2.txt") is attached to every deck in it.
+    transcript_files: List[str] = field(default_factory=list)
+    # Other decks' lecture PDFs that share one of those recordings.
+    other_decks: List[str] = field(default_factory=list)
 
-    def transcript_path(self, course: "CourseConfig") -> Optional[Path]:
-        return course.transcripts_dir / self.transcript_file if self.transcript_file else None
+    def transcript_paths(self, course: "CourseConfig") -> List[Path]:
+        return [course.transcripts_dir / f for f in self.transcript_files]
 
     def source_paths(self, course: "CourseConfig") -> List[Path]:
         paths = [course.lectures_dir / f for f in self.lecture_files]
@@ -74,11 +79,14 @@ class Unit:
         tags += [BOOK_PROMPT_VERSION] if course.book else []
         tags += [t for t in (course.focus, course.instructions) if t]
         paths = self.source_paths(course)
-        if self.transcript_file:
+        if self.transcript_files:
             tags.append(TRANSCRIPT_PROMPT_VERSION)
             if not self.lecture_files:
                 tags.append(TRANSCRIPT_ONLY_PROMPT_VERSION)
-            paths.insert(0, self.transcript_path(course))
+            if self.other_decks:
+                tags.append(TRANSCRIPT_SHARED_PROMPT_VERSION)
+                paths += [course.lectures_dir / f for f in self.other_decks]
+            paths = self.transcript_paths(course) + paths
         return fingerprint(paths, *tags)[:16]
 
 
@@ -232,16 +240,23 @@ def discover_course_config(
     )
 
 
-def _lecture_key(stem: str):
-    """"L1 - Intro" and "L1" share key 1; a name with no leading number is its own key."""
-    m = re.match(r"\s*L?\s*(\d+)", stem, re.I)
-    return int(m[1]) if m else stem.strip().lower()
+def _lecture_keys(stem: str) -> list:
+    """"L1 - Intro" and "L1" have keys [1], "L1-3" or "L1-L3" [1, 2, 3], "L1,3" [1, 3];
+    a name with no leading number is its own key."""
+    m = re.match(r"\s*L?\s*(\d+(?:[-,]L?\d+)*)", stem, re.I)
+    if not m:
+        return [stem.strip().lower()]
+    keys = []
+    for piece in m[1].split(","):
+        ends = [int(n.lstrip("Ll")) for n in piece.split("-")]
+        keys += range(ends[0], ends[-1] + 1)
+    return keys
 
 
 def attach_transcripts(course: CourseConfig) -> int:
-    """Pairs each .txt in the course's transcripts folder with the lecture unit
-    of the same lecture key (see _lecture_key); a transcript with no lecture
-    PDF becomes a lecture unit of its own. Returns how many were found."""
+    """Pairs each .txt in the course's transcripts folder with the lecture units
+    of its lecture keys (see _lecture_keys); a transcript with no lecture PDF
+    becomes a lecture unit of its own. Returns how many were found."""
     root = course.lectures_dir.parent
     found = sorted(d for d in root.rglob("*") if d.is_dir() and d.name.lower() in _TRANSCRIPT_DIR_NAMES) \
         if root.exists() else []
@@ -250,15 +265,16 @@ def attach_transcripts(course: CourseConfig) -> int:
     course.transcripts_dir = found[0]
     texts = sorted((p for p in course.transcripts_dir.glob("*.txt") if not p.stem.startswith("_")),
                    key=lambda p: _natural_key(p.stem))
-    by_key = {_lecture_key(Path(u.lecture_files[0]).stem): u for u in course.units if u.lecture_files}
+    by_key = {_lecture_keys(Path(u.lecture_files[0]).stem)[0]: u for u in course.units if u.lecture_files}
     added = []
     for t in texts:
-        unit = by_key.get(_lecture_key(t.stem))
-        if unit:
-            unit.transcript_file = t.name
-        else:
+        units = [by_key[k] for k in _lecture_keys(t.stem) if k in by_key]
+        for u in units:
+            u.transcript_files.append(t.name)
+            u.other_decks += [f for o in units if o is not u for f in o.lecture_files if f not in u.other_decks]
+        if not units:
             print(f"  transcript {t.name} matches no lecture PDF - summarizing it on its own")
-            added.append(Unit(name=_clean_unit_name(t.stem), transcript_file=t.name))
+            added.append(Unit(name=_clean_unit_name(t.stem), transcript_files=[t.name]))
     if added:
         # ponytail: re-sorts lectures by name, so a YAML's hand-picked unit
         # order is lost when it gets a transcript-only lecture.
