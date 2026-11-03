@@ -150,10 +150,12 @@ video and the `.txt` into the `Transcripts` folder beside it, where the
 summarizer picks it up. An existing `.txt` there is kept. Needs `ffmpeg` on
 PATH and the `bgu-login` host (with its key) in `~/.ssh/config`.
 
-The summarizer gives each transcript to the slide deck with the same lecture
-number. When a recording doesn't line up with the decks, name it for the
-decks it covers: `L1-2.mp4` (or just the transcript, `L1-2.txt`) is attached
-to both the L1 and L2 decks, and `L1,3.txt` to L1 and L3. Each deck then
+Recordings are named for the order they were given in: `L1.mp4` is the
+first lecture, `L2.mp4` the second. The summarizer gives each transcript to
+the slide deck with the same number. When a recording doesn't line up with
+the decks, rename its transcript by hand for the decks it covers: `L1-2.txt`
+is attached to both the L1 and L2 decks, and `L1,3.txt` to L1 and L3 (the
+`.srt` keeps the recording's name, so the transcriber won't redo it). Each deck then
 takes only the passages about its own slides, and a deck covered by two
 recordings (`L1-2` and `L2-3`) gets both. A shared transcript is sent with
 every deck it covers, so it costs that much more.

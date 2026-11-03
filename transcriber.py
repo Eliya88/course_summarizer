@@ -37,7 +37,7 @@ HOST = "bgu-login"  # ~/.ssh/config alias for slurm.bgu.ac.il, with the cluster 
 SSH = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
 PARALLEL = 3  # lectures in flight at once; each holds one GPU job while it runs
 SETTINGS = ROOT / "output" / "transcriber_settings.json"
-LECTURE = re.compile(r"L\d+(-L?\d+)?", re.I)  # "L1-2": a recording that covers decks L1 and L2
+LECTURE = re.compile(r"L\d+", re.I)
 POLL = 30  # seconds between checks on a running job
 RETRY, GIVE_UP = 30, 30 * 60  # seconds between tries while the connection is down, and how long to keep trying
 # How far a lecture got on the cluster, as its first line: done | failed (then the
