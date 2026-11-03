@@ -138,9 +138,10 @@ Flags:
 
 ## Transcribing lecture recordings
 
-`Transcriber.bat` (or `python transcriber.py`) opens a window where you pick
-a base folder and then a course in it from the list, like the summarizer
-app. It lists every `L<n>.mp4` in the course
+The app (`Course Summarizer.bat`, or `python app.py`) has two tabs:
+**Summary** and **Transcription**. Both use the base folder at the top of the
+window, and each tab keeps its own course. In the Transcription tab, pick a
+course from the list. It lists every `L<n>.mp4` in the course
 that has no `L<n>.srt` beside it (or the `L<n>.m4a` or `L<n>.mp3`, e.g. a phone recording, when there's no
 video),
 makes an mp3 of each with ffmpeg unless there is one already, runs the

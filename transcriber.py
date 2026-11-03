@@ -1,4 +1,4 @@
-"""Desktop window: transcribe a folder's lecture recordings on the BGU cluster.
+"""The app's Transcription tab: transcribe a course's lecture recordings on the BGU cluster.
 
 Finds every L<n>.mp4 (or, with no video, L<n>.m4a or L<n>.mp3) under the
 chosen folder with no L<n>.srt beside it, makes an mp3 of it if missing (ffmpeg), runs the Hebrew Whisper GPU job on the cluster
@@ -11,12 +11,11 @@ lecture has a fixed name on the cluster, the job runs detached from the
 connection, and a lecture's next step is read off the cluster's files. A lost
 connection is retried for a while; after that, Run again resumes.
 
-Launch with "Transcriber.bat" (no console) or `python transcriber.py`.
+Open it from "Course Summarizer.bat" or `python app.py`.
 """
 from __future__ import annotations
 
 import hashlib
-import json
 import queue
 import re
 import shutil
@@ -27,16 +26,16 @@ import time
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
-from app import ACCENT, BG, BORDER, CARD, FONT, GREEN, MUTED, RED, ROOT, TEXT, Window, _card, _load_settings, launch
+from app import (ACCENT, BG, BORDER, CARD, FONT, GREEN, MUTED, RED, SETTINGS, TEXT, Page, _card, _load_settings,
+                 _save_settings)
 from src.config import _TRANSCRIPT_DIR_NAMES, _natural_key
 
 HOST = "bgu-login"  # ~/.ssh/config alias for slurm.bgu.ac.il, with the cluster key
 # Fail instead of waiting on a password prompt nobody sees, or on a VPN that's down.
 SSH = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
 PARALLEL = 3  # lectures in flight at once; each holds one GPU job while it runs
-SETTINGS = ROOT / "output" / "transcriber_settings.json"
 LECTURE = re.compile(r"L\d+", re.I)
 POLL = 30  # seconds between checks on a running job
 RETRY, GIVE_UP = 30, 30 * 60  # seconds between tries while the connection is down, and how long to keep trying
@@ -91,9 +90,10 @@ def transcripts_dir(video: Path) -> Path:
     return d
 
 
-class App(Window):
-    def __init__(self) -> None:
-        super().__init__("Lecture Transcriber")
+class TranscriberPage(Page):
+    def __init__(self, window) -> None:
+        super().__init__(window, "Transcribe every lecture recording (L1.mp4, L2.m4a, L3.mp3, …) "
+                                 "that has no subtitles yet.")
         px = float(self.tk.call("tk", "scaling"))
         s = ttk.Style(self)
         s.configure("Treeview", background=CARD, fieldbackground=CARD, foreground=TEXT,
@@ -107,25 +107,11 @@ class App(Window):
         self.running = False
         self.stop_event = threading.Event()
         self.videos: list[Path] = []
-        saved = _load_settings(SETTINGS)
-        if not saved.get("base"):  # first launch: start from the summarizer's base folder
-            saved = {"base": _load_settings(ROOT / "output" / "app_settings.json").get("base", "")}
-        self.base = tk.StringVar(value=saved.get("base", ""))
-        self.course = tk.StringVar(value=saved.get("course", ""))
+        self.course = tk.StringVar(value=_load_settings(SETTINGS).get("transcribe_course", ""))
 
-        page = ttk.Frame(self, style="Root.TFrame", padding=(20, 16, 20, 20))
-        page.pack(fill="both", expand=True)
-        ttk.Label(page, text="Lecture Transcriber", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(page, text="Transcribe every lecture recording (L1.mp4, L2.m4a, L3.mp3, …) that has no subtitles yet.",
-                  style="Subtitle.TLabel").pack(anchor="w", pady=(0, 14))
-
-        # Same layout as the summarizer: a base folder, then a course in it picked from the list.
-        source = _card(page, "Source")
-        ttk.Label(source, text="BASE FOLDER", style="Field.TLabel").pack(anchor="w")
-        row = ttk.Frame(source)
-        row.pack(fill="x", pady=(2, 12))
-        ttk.Entry(row, textvariable=self.base).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="Browse…", command=self._browse).pack(side="left", padx=(8, 0))
+        # A course in the shared base folder, picked from the list; a new base folder clears it.
+        source = _card(self, "Source")
+        self.base.trace_add("write", lambda *_: (self.course.set(""), self._scan()))
         ttk.Label(source, text="COURSE NAME", style="Field.TLabel").pack(anchor="w")
         row = ttk.Frame(source)
         row.pack(fill="x", pady=(2, 0))
@@ -139,7 +125,7 @@ class App(Window):
         courses.pack(side="left", fill="x", expand=True, padx=(4, 0))
         ttk.Button(row, text="Scan", command=self._scan).pack(side="left", padx=(8, 0))
 
-        lectures = _card(page, "Lectures")
+        lectures = _card(self, "Lectures")
         self.tree = ttk.Treeview(lectures, columns=("lecture", "status"), show="headings", height=8)
         self.tree.heading("lecture", text="LECTURE", anchor="w")
         self.tree.heading("status", text="STATUS", anchor="w")
@@ -147,7 +133,7 @@ class App(Window):
         self.tree.column("status", width=int(px * 200))
         self.tree.pack(fill="x")
 
-        actions = ttk.Frame(page, style="Root.TFrame")
+        actions = ttk.Frame(self, style="Root.TFrame")
         actions.pack(fill="x", pady=(4, 8))
         self.run_btn = ttk.Button(actions, text="▶  Run", style="Accent.TButton", command=self.start)
         self.run_btn.pack(side="left")
@@ -157,18 +143,11 @@ class App(Window):
         self.status.pack(side="right")
         self._set_status("Ready", MUTED)
 
-        self._progress_bar(page)
-
+        self._progress_bar()
         self._scan()
-        self.protocol("WM_DELETE_WINDOW", self._close)
-        self._center()
 
-    def _browse(self) -> None:
-        path = filedialog.askdirectory(initialdir=self.base.get() or None)
-        if path:
-            self.base.set(str(Path(path)))
-            self.course.set("")
-            self._scan()
+    def busy(self) -> bool:
+        return self.running
 
     def _scan(self) -> None:
         if self.running:  # the list is the run's progress; keep it until the run ends
@@ -180,8 +159,7 @@ class App(Window):
         for i, video in enumerate(self.videos):
             self.tree.insert("", "end", iid=str(i), values=(video.relative_to(folder), "Waiting"))
         self.stage.configure(text=f"{len(self.videos)} lecture(s) to transcribe" if ready else "Choose a course")
-        SETTINGS.parent.mkdir(exist_ok=True)
-        SETTINGS.write_text(json.dumps({"base": self.base.get(), "course": self.course.get()}), encoding="utf-8")
+        _save_settings(transcribe_course=self.course.get())
 
     def start(self) -> None:
         self._scan()
@@ -342,13 +320,3 @@ class App(Window):
             self.stop_event.set()
             for proc in self.procs:
                 proc.kill()
-
-    def _close(self) -> None:
-        if self.running and not messagebox.askyesno("Lecture Transcriber", "A run is in progress. Stop it and quit?"):
-            return
-        self.stop()
-        self.destroy()
-
-
-if __name__ == "__main__":
-    launch(App)

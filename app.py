@@ -1,4 +1,5 @@
-"""Desktop window for main.py: pick a course or book, tick options, press Run.
+"""Desktop window with two tabs: Summary runs main.py on a course or book,
+Transcription (transcriber.py) transcribes a course's lecture recordings.
 
 Launch with "Course Summarizer.bat" (no console) or `python app.py`.
 """
@@ -187,6 +188,11 @@ def _style(root: tk.Tk) -> None:
     s.configure("Horizontal.TProgressbar", troughcolor=BORDER, background=ACCENT,
                 bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT, thickness=int(px * 6))
     s.configure("Percent.TLabel", background=BG, font=(FONT, 11, "bold"))
+    s.configure("TNotebook", background=BG, bordercolor=BORDER, lightcolor=BG, darkcolor=BG, tabmargins=0)
+    s.configure("TNotebook.Tab", background=BG, foreground=MUTED, font=(FONT, 10, "bold"), padding=(20, 6),
+                bordercolor=BORDER, lightcolor=BG, focuscolor=BG)
+    s.map("TNotebook.Tab", background=[("selected", BG), ("active", BORDER)],
+          foreground=[("selected", ACCENT)], lightcolor=[("selected", BG)])
 
 
 def _card(parent, title: str) -> ttk.Frame:
@@ -205,31 +211,99 @@ def _load_settings(path: Path) -> dict:
         return {}
 
 
-class Window(tk.Tk):
-    """What the summarizer and transcriber windows share."""
+def _save_settings(**changes) -> None:
+    """Updates the given keys of the settings file, keeping the rest."""
+    SETTINGS.parent.mkdir(exist_ok=True)
+    SETTINGS.write_text(json.dumps(_load_settings(SETTINGS) | changes), encoding="utf-8")
 
-    def __init__(self, title: str) -> None:
+
+def _path_field(parent, var: tk.StringVar, base: tk.StringVar, folder=False) -> ttk.Frame:
+    frame = ttk.Frame(parent)
+    ttk.Entry(frame, textvariable=var).pack(side="left", fill="x", expand=True)
+
+    def browse():
+        start = var.get() or base.get() or None
+        if start and not Path(start).is_dir():
+            start = str(Path(start).parent)
+        path = (filedialog.askdirectory(initialdir=start) if folder
+                else filedialog.askopenfilename(initialdir=start, filetypes=[("PDF", "*.pdf")]))
+        if path:
+            var.set(os.path.normpath(path))
+
+    ttk.Button(frame, text="Browse…", command=browse).pack(side="left", padx=(8, 0))
+    return frame
+
+
+class MainWindow(tk.Tk):
+    """One window: the base folder both tabs share, then a tab per mode."""
+
+    def __init__(self) -> None:
         super().__init__()
-        self.title(title)
+        from transcriber import TranscriberPage  # it imports this module
+        self.title("Course Summarizer")
         self.minsize(680, 0)
         self.configure(background=BG)
         _style(self)
 
-    def _progress_bar(self, page) -> None:
-        self.progress = ttk.Progressbar(page, maximum=100)
-        self.progress.pack(fill="x", pady=(4, 6))
-        info = ttk.Frame(page, style="Root.TFrame")
-        info.pack(fill="x")
-        self.stage = ttk.Label(info, style="Subtitle.TLabel")
-        self.stage.pack(side="left")
-        self.percent = ttk.Label(info, style="Percent.TLabel")
-        self.percent.pack(side="right")
+        saved = _load_settings(SETTINGS)
+        self.base = tk.StringVar(value=os.path.normpath(saved["base"]) if saved.get("base") else "")
+        self.base.trace_add("write", lambda *_: _save_settings(base=self.base.get()))
+
+        page = ttk.Frame(self, style="Root.TFrame", padding=(20, 16, 20, 20))
+        page.pack(fill="both", expand=True)
+        ttk.Label(page, text="Course Summarizer", style="Title.TLabel").pack(anchor="w", pady=(0, 12))
+        _path_field(_card(page, "Base folder"), self.base, self.base, folder=True).pack(fill="x")
+
+        self.tabs = ttk.Notebook(page)
+        self.tabs.pack(fill="both", expand=True)
+        self.pages = [SummaryPage(self), TranscriberPage(self)]
+        for p, text in zip(self.pages, ("Summary", "Transcription")):
+            self.tabs.add(p, text=text)
+        tab = saved.get("tab", 0)
+        self.tabs.select(tab if tab in range(len(self.pages)) else 0)
+        self.tabs.bind("<<NotebookTabChanged>>", lambda _: _save_settings(tab=self.tabs.index("current")))
+
+        self.bind("<Return>", self._enter)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self._center()
+
+    def _enter(self, _) -> None:
+        page = self.nametowidget(self.tabs.select())
+        if page.run_btn.instate(["!disabled"]):
+            page.start()
 
     def _center(self) -> None:
         """Open centered on the screen instead of Windows' default top-left spot."""
         self.update_idletasks()
         w, h = max(self.winfo_reqwidth(), 680), self.winfo_reqheight()
         self.geometry(f"+{(self.winfo_screenwidth() - w) // 2}+{max(0, (self.winfo_screenheight() - h) // 2 - 30)}")
+
+    def _close(self) -> None:
+        if any(p.busy() for p in self.pages) and not messagebox.askyesno(
+                "Course Summarizer", "A run is in progress. Stop it and quit?"):
+            return
+        for p in self.pages:
+            p.stop()
+        self.destroy()
+
+
+class Page(ttk.Frame):
+    """What the Summary and Transcription tabs share."""
+
+    def __init__(self, window: MainWindow, subtitle: str) -> None:
+        super().__init__(window.tabs, style="Root.TFrame", padding=(14, 14, 14, 10))
+        self.base = window.base
+        ttk.Label(self, text=subtitle, style="Subtitle.TLabel").pack(anchor="w", pady=(0, 12))
+
+    def _progress_bar(self) -> None:
+        self.progress = ttk.Progressbar(self, maximum=100)
+        self.progress.pack(fill="x", pady=(4, 6))
+        info = ttk.Frame(self, style="Root.TFrame")
+        info.pack(fill="x")
+        self.stage = ttk.Label(info, style="Subtitle.TLabel")
+        self.stage.pack(side="left")
+        self.percent = ttk.Label(info, style="Percent.TLabel")
+        self.percent.pack(side="right")
 
     def _set_status(self, text: str, color: str) -> None:
         self.status.configure(text=f"●  {text}", foreground=color)
@@ -245,25 +319,22 @@ class Window(tk.Tk):
             return []
 
 
-def launch(cls: type[Window]) -> None:
+def launch() -> None:
     if sys.platform == "win32":
         import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on scaled displays
-    cls().mainloop()
+    MainWindow().mainloop()
 
 
-class App(Window):
-    def __init__(self) -> None:
-        super().__init__("Course Summarizer")
+class SummaryPage(Page):
+    def __init__(self, window: MainWindow) -> None:
+        super().__init__(window, "Turn a course's lectures, or a textbook's chapters, into one study PDF.")
         px = float(self.tk.call("tk", "scaling"))
         self.proc: subprocess.Popen | None = None
         self.lines: queue.Queue[str | None] = queue.Queue()
         self.pdf_path: str | None = None
 
-        saved = _load_settings(SETTINGS)
-        self.base = tk.StringVar(value=os.path.normpath(saved["base"]) if saved.get("base") else "")
-        self.base.trace_add("write", lambda *_: self._save_settings())
-        self.open_when_ready = bool(saved.get("open_when_ready"))
+        self.open_when_ready = bool(_load_settings(SETTINGS).get("open_when_ready"))
         self.mode = tk.StringVar(value="course")
         self.course_dir = tk.StringVar()
         self.book = tk.StringVar()
@@ -272,18 +343,8 @@ class App(Window):
         self.instructions = tk.StringVar()
         self.flags = {flag: tk.BooleanVar() for _, _, flag in OPTIONS}
 
-        page = ttk.Frame(self, style="Root.TFrame", padding=(20, 16, 20, 20))
-        page.pack(fill="both", expand=True)
-
-        ttk.Label(page, text="Course Summarizer", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(page, text="Turn a course's lectures, or a textbook's chapters, into one study PDF.",
-                  style="Subtitle.TLabel").pack(anchor="w", pady=(0, 14))
-
-        # Source card: base folder, then a Course / Book switch and its fields.
-        source = _card(page, "Source")
-        ttk.Label(source, text="BASE FOLDER", style="Field.TLabel").pack(anchor="w")
-        self._path_field(source, self.base, folder=True).pack(fill="x", pady=(2, 12))
-
+        # Source card: a Course / Book switch and its fields.
+        source = _card(self, "Source")
         switch = ttk.Frame(source)
         switch.pack(anchor="w", pady=(0, 12))
         for text, value in (("Course", "course"), ("Book", "book")):
@@ -307,16 +368,16 @@ class App(Window):
 
         self.book_panel = ttk.Frame(source)
         ttk.Label(self.book_panel, text="BOOK PDF", style="Field.TLabel").pack(anchor="w")
-        self._path_field(self.book_panel, self.book).pack(fill="x", pady=(2, 10))
+        _path_field(self.book_panel, self.book, self.base).pack(fill="x", pady=(2, 10))
         ttk.Label(self.book_panel, text="CHAPTERS", style="Field.TLabel").pack(anchor="w")
         chapters = ttk.Frame(self.book_panel)
         chapters.pack(fill="x", pady=(2, 10))
         ttk.Entry(chapters, textvariable=self.chapters, width=14).pack(side="left")
         ttk.Label(chapters, text="e.g. 1-5 or 1,3,5", style="Muted.TLabel").pack(side="left", padx=8)
         ttk.Label(self.book_panel, text="FOCUS PDF  ·  OPTIONAL", style="Field.TLabel").pack(anchor="w")
-        self._path_field(self.book_panel, self.focus).pack(fill="x", pady=(2, 0))
+        _path_field(self.book_panel, self.focus, self.base).pack(fill="x", pady=(2, 0))
 
-        options = _card(page, "Options")
+        options = _card(self, "Options")
         grid = ttk.Frame(options)
         grid.pack(fill="x")
         grid.columnconfigure((0, 1), weight=1, uniform="opt")
@@ -328,7 +389,7 @@ class App(Window):
         ttk.Label(options, text="EXTRA INSTRUCTIONS  ·  OPTIONAL", style="Field.TLabel").pack(anchor="w", pady=(10, 0))
         ttk.Entry(options, textvariable=self.instructions).pack(fill="x", pady=(2, 0))
 
-        actions = ttk.Frame(page, style="Root.TFrame")
+        actions = ttk.Frame(self, style="Root.TFrame")
         actions.pack(fill="x", pady=(4, 8))
         self.run_btn = ttk.Button(actions, text="▶  Run", style="Accent.TButton", command=self.start)
         self.run_btn.pack(side="left")
@@ -340,33 +401,11 @@ class App(Window):
         self.status.pack(side="right")
         self._set_status("Ready", MUTED)
 
-        self._progress_bar(page)
-
+        self._progress_bar()
         self._sync_mode()
-        self.bind("<Return>", lambda _: self.run_btn.instate(["!disabled"]) and self.start())
-        self.protocol("WM_DELETE_WINDOW", self._close)
-        self._center()
 
-    def _path_field(self, parent, var, folder=False) -> ttk.Frame:
-        frame = ttk.Frame(parent)
-        ttk.Entry(frame, textvariable=var).pack(side="left", fill="x", expand=True)
-
-        def browse():
-            start = var.get() or self.base.get() or None
-            if start and not Path(start).is_dir():
-                start = str(Path(start).parent)
-            path = (filedialog.askdirectory(initialdir=start) if folder
-                    else filedialog.askopenfilename(initialdir=start, filetypes=[("PDF", "*.pdf")]))
-            if path:
-                var.set(os.path.normpath(path))
-
-        ttk.Button(frame, text="Browse…", command=browse).pack(side="left", padx=(8, 0))
-        return frame
-
-    def _save_settings(self) -> None:
-        SETTINGS.parent.mkdir(exist_ok=True)
-        SETTINGS.write_text(json.dumps({"base": self.base.get(), "open_when_ready": self.open_when_ready}),
-                            encoding="utf-8")
+    def busy(self) -> bool:
+        return self.proc is not None
 
     def _check_folders(self) -> None:
         from src.config import ensure_course_folders
@@ -486,7 +525,7 @@ class App(Window):
         if self.proc:
             self.open_when_ready = not self.open_when_ready
             self.open_btn.configure(text=self._armed_text())
-            self._save_settings()
+            _save_settings(open_when_ready=self.open_when_ready)
         else:
             os.startfile(self.pdf_path)
 
@@ -498,12 +537,7 @@ class App(Window):
             self.stopped = True
             self.proc.kill()
 
-    def _close(self) -> None:
-        if self.proc and not messagebox.askyesno("Course Summarizer", "A run is in progress. Stop it and quit?"):
-            return
-        self.stop()
-        self.destroy()
-
 
 if __name__ == "__main__":
-    launch(App)
+    import app  # this file as a module, so the transcriber tab's `from app import` doesn't load a second copy
+    app.launch()
