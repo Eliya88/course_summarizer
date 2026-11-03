@@ -76,6 +76,7 @@ def test_unsupported_latex_is_rewritten_for_mathtext():
         r"f(x) \xrightarrow{\text{Fourier Transform}} F(\omega)",
         r"\Bigl( a \Bigr) \implies b",
         r"MTTF = \frac{\#items\ tested}{\#items\ failed}",
+        r"z = \begin{bmatrix} -\,w_1^T\,- \\ -\,w_2^T\,- \end{bmatrix} \begin{pmatrix} a & b \\ c & d \end{pmatrix}",
     ]:
         parser.parse(f"${pdf_builder._to_mathtext(body)}$")  # raises if still unsupported
     assert pdf_builder._to_mathtext(r"\bigcup_i A_i") == r"\bigcup_i A_i"  # real commands untouched
@@ -96,6 +97,13 @@ def test_long_english_quote_wraps_inside_the_margins():
 def test_english_after_a_hebrew_prefix_stays_in_one_chunk():
     words = [w for w, _ in pdf_builder._tokenize_words("Tokens ו-Language Models של **ה-BPE** מודל")]
     assert words == ["Tokens", "ו-Language Models", "של", "ה-BPE", "מודל"]
+
+
+def test_list_number_before_english_stays_its_own_token():
+    words = [w for w, _ in pdf_builder._tokenize_words("3. ImageNet ורשתות")]
+    assert words == ["3.", "ImageNet", "ורשתות"]
+    assert [w for w, _ in pdf_builder._tokenize_words("**3. ImageNet** ורשתות")][:2] == ["3.", "ImageNet"]
+    assert [w for w, _ in pdf_builder._tokenize_words("1.5 GPUs")] == ["1.5 GPUs"]  # not a list number
 
 
 def test_chapter_topic_list_links_to_each_topic(tmp_path):

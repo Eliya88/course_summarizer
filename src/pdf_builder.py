@@ -149,8 +149,10 @@ def _tokenize_words(text: str, prefix: str = ""):
             # A non-Hebrew word starts a run of the non-Hebrew words after it.
             # So does a Hebrew prefix glued to English ("ו-Language Models");
             # split apart, they would be placed right-to-left and swap places.
+            # A leading "3." is its own token too, so it stays at the right edge.
             j = i + 1
-            if not _HEBREW_RE.search(words[i]) or _LATIN_TAIL_RE.search(words[i]):
+            numbered = not tokens and re.fullmatch(r"\d+[.)]", words[i])
+            if not numbered and (not _HEBREW_RE.search(words[i]) or _LATIN_TAIL_RE.search(words[i])):
                 while j < len(words) and not _HEBREW_RE.search(words[j]):
                     j += 1
             tokens.append((" ".join(words[i:j]), is_bold))
@@ -296,6 +298,9 @@ def _write_richtext(pdf: FPDF, text: str, size: float, prefix: str = "",
 _MATH_FONT_SIZE = 15  # pt - the visual scale rendered formulas come out at
 _MATH_DPI = 300        # raster quality only; physical size is derived from this
 
+_MATRIX_BRACKETS = {"b": (r"\left[", r"\right]"), "p": (r"\left(", r"\right)"), "v": (r"\left|", r"\right|"),
+                    "V": (r"\left\Vert", r"\right\Vert"), "": ("", "")}
+
 # Common LaTeX the model writes that mathtext doesn't know, rewritten to an
 # equivalent it does. \big( etc. only size a delimiter, so dropping the
 # command keeps the delimiter itself.
@@ -305,6 +310,10 @@ _MATHTEXT_FIXES = [
     (re.compile(r"\\iff(?![a-zA-Z])"), r"\\Leftrightarrow"),
     (re.compile(r"\\implies(?![a-zA-Z])"), r"\\Rightarrow"),
     (re.compile(r"\\x(right|left)arrow\{((?:[^{}]|\{[^{}]*\})*)\}"), r"\\overset{\2}{\\long\1arrow}"),
+    # No matrix environments either: stack the rows with \substack, columns a \quad apart.
+    (re.compile(r"\\begin\{([bpvV]?)matrix\}(.*?)\\end\{\1matrix\}", re.S),
+     lambda m: _MATRIX_BRACKETS[m[1]][0] + r"\,\substack{" + m[2].replace("&", r"\quad ") + r"}\,"
+     + _MATRIX_BRACKETS[m[1]][1]),
 ]
 
 
@@ -509,7 +518,10 @@ def _write_heading(pdf: FPDF, text: str, level: int) -> None:
     pdf.ln(0 if is_subject_heading and not pdf.page_dirty else gaps[level])
     pdf.set_font(FONT_FAMILY, style="B", size=sizes[level])
     pdf.set_text_color(*HEADING_COLOR)
-    pdf.multi_cell(w=pdf.epw, h=sizes[level] * 0.7, text=text, align="C" if level == 1 else "R", new_x="LMARGIN", new_y="NEXT")
+    if level == 1:
+        pdf.multi_cell(w=pdf.epw, h=sizes[level] * 0.7, text=text, align="C", new_x="LMARGIN", new_y="NEXT")
+    else:  # multi_cell puts the "3." of "3. ImageNet ורשתות" left of ImageNet
+        _write_richtext(pdf, f"**{text.replace('**', '')}**", size=sizes[level])
     if level <= 2:
         pdf.set_draw_color(*HEADING_COLOR)
         pdf.set_line_width(0.5)
