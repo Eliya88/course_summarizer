@@ -308,13 +308,15 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     return markdown
 
 
-def run(course: CourseConfig, use_cache: bool = True, with_tests: bool = False) -> List[str]:
+def run(course: CourseConfig, use_cache: bool = True, with_tests: bool = False,
+        rebuild: frozenset = frozenset()) -> List[str]:
     """Runs every unit and returns a list of top-level Markdown sections
     (cover page first, then one per unit) - kept separate so the PDF builder
     can insert a page break between each one.
 
     With `with_tests`, each unit also gets a past-exam practice question
-    appended, provided the course has an exams folder to draw from."""
+    appended, provided the course has an exams folder to draw from. Units
+    numbered in `rebuild` (1-based, as in the log) skip the cache."""
     client = claude_client.make_client()
     # A book's chapters are too long to resend as a digest on every call.
     digest = "" if course.book else build_course_context(course)
@@ -334,10 +336,11 @@ def run(course: CourseConfig, use_cache: bool = True, with_tests: bool = False) 
 
     def one_unit(n: int, unit: Unit) -> str:
         set_unit(n)
-        markdown = process_unit(client, course, unit, digest, use_cache=use_cache)
+        cached = use_cache and n not in rebuild
+        markdown = process_unit(client, course, unit, digest, use_cache=cached)
         if exam_files:
             exam_block = generate_exam_block(
-                client, course, unit, markdown, exam_files, exam_fp, use_cache=use_cache
+                client, course, unit, markdown, exam_files, exam_fp, use_cache=cached
             )
             if exam_block:
                 markdown = markdown + "\n\n" + exam_block

@@ -3,6 +3,7 @@
 Usage:
     python main.py --course-dir "../NLP"                  # auto-discover, no YAML needed
     python main.py --course-dir "../NLP" --no-cache
+    python main.py --course-dir "../NLP" --rebuild 3     # make lecture 3 again, the rest from the cache
     python main.py --course-dir "../NLP" --with-exercises # also summarize exercise/tutorial units
     python main.py --course-dir "../NLP" --with-tests     # add a past-exam practice page after each chapter
     python main.py --course courses/data_science.yaml     # or use a hand-written YAML config
@@ -33,7 +34,8 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 
-from src.config import attach_transcripts, discover_book_config, discover_course_config, load_course_config
+from src.config import (attach_transcripts, discover_book_config, discover_course_config, load_course_config,
+                        parse_chapters)
 from src.pdf_builder import build_pdf
 from src.pipeline import run
 
@@ -52,6 +54,7 @@ def main() -> None:
     parser.add_argument("--course-dir", type=str, help="Path to a course folder containing Lectures/Exercises subfolders - auto-discovers units, no YAML needed")
     parser.add_argument("--course", type=str, help="Path to a course YAML config, e.g. courses/data_science.yaml")
     parser.add_argument("--no-cache", action="store_true", help="Re-call Claude for every unit even if a cached result exists")
+    parser.add_argument("--rebuild", type=str, help="Lecture (or chapter) numbers to make again, ignoring their cache, e.g. 3 or 2,4 - numbered as in the log")
     parser.add_argument("--with-exercises", action="store_true", help="Also summarize exercise/tutorial units (lectures only by default)")
     parser.add_argument("--with-tests", action="store_true", help="After each chapter, add a practice page with a question from the course's past exams and a worked solution (needs an exams folder in the course directory)")
     parser.add_argument("--book", type=str, help="Path to a textbook PDF with chapter bookmarks - summarizes the --chapters given, shorter than a regular run")
@@ -98,10 +101,17 @@ def main() -> None:
         print(f"  [--with-tests] flag: {n_exams} past-exam PDF(s) from "
               f"{course.exams_dir if course.exams_dir else 'no exams folder found'}")
 
+    rebuild = frozenset(parse_chapters(args.rebuild)) if args.rebuild else frozenset()
+    if unknown := sorted(rebuild - set(range(1, len(course.units) + 1))):
+        parser.error(f"--rebuild {args.rebuild}: there are {len(course.units)} units, no {unknown[0]}")
+    for n in sorted(rebuild):
+        print(f"  [--rebuild] making unit {n} again: {course.units[n - 1].name}")
+
     sections = run(
         course,
         use_cache=not args.no_cache,
         with_tests=args.with_tests,
+        rebuild=rebuild,
     )
 
     output_path = course.output_dir / f"{course.course_name.replace(' ', '_')}_summary.pdf"

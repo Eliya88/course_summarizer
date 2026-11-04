@@ -251,6 +251,17 @@ def test_run_overlaps_units_and_keeps_their_order(monkeypatch, capsys):
     assert sorted(lines) == ["[1] start A", "[2] start B", "[3] start C"]
 
 
+def test_rebuild_skips_the_cache_only_for_the_numbered_units(monkeypatch):
+    cached = {}
+    monkeypatch.setattr(pipeline.claude_client, "make_client", lambda: None)
+    monkeypatch.setattr(pipeline, "build_course_context", lambda course: "")
+    monkeypatch.setattr(pipeline, "process_unit",
+                        lambda client, course, unit, digest, use_cache=True: cached.setdefault(unit.name, use_cache))
+    course = SimpleNamespace(book=False, course_name="C", units=[Unit(name=n) for n in "ABC"])
+    pipeline.run(course, rebuild=frozenset({2}))
+    assert cached == {"A": True, "B": False, "C": True}
+
+
 def test_ensure_course_folders_creates_only_what_is_missing(tmp_path):
     from src.config import ensure_course_folders
     assert ensure_course_folders(tmp_path) == [tmp_path / "Lectures", tmp_path / "Recordings" / "Transcripts"]

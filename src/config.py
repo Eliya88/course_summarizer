@@ -307,7 +307,7 @@ def parse_chapters(spec: str) -> List[int]:
     for part in spec.replace(" ", "").split(","):
         first, _, last = part.partition("-")
         if not first.isdigit() or (last and not last.isdigit()):
-            raise ValueError(f"Bad --chapters value {spec!r}, expected e.g. 1-5 or 1,3,5")
+            raise ValueError(f"Bad number list {spec!r}, expected e.g. 1-5 or 1,3,5")
         chapters += range(int(first), int(last or first) + 1)
     return sorted(set(chapters))
 

@@ -341,6 +341,7 @@ class SummaryPage(Page):
         self.chapters = tk.StringVar()
         self.focus = tk.StringVar()
         self.instructions = tk.StringVar()
+        self.rebuild = tk.StringVar()
         self.flags = {flag: tk.BooleanVar() for _, _, flag in OPTIONS}
 
         # Source card: a Course / Book switch and its fields.
@@ -388,6 +389,12 @@ class SummaryPage(Page):
             ttk.Label(cell, text=hint, style="Muted.TLabel").pack(anchor="w", padx=(int(px * 11) + 10, 0))
         ttk.Label(options, text="EXTRA INSTRUCTIONS  ·  OPTIONAL", style="Field.TLabel").pack(anchor="w", pady=(10, 0))
         ttk.Entry(options, textvariable=self.instructions).pack(fill="x", pady=(2, 0))
+        ttk.Label(options, text="REBUILD  ·  OPTIONAL", style="Field.TLabel").pack(anchor="w", pady=(10, 0))
+        rebuild = ttk.Frame(options)
+        rebuild.pack(fill="x", pady=(2, 0))
+        ttk.Entry(rebuild, textvariable=self.rebuild, width=14).pack(side="left")
+        ttk.Label(rebuild, text="lecture numbers to make again, ignoring the cache, e.g. 3 or 2,4",
+                  style="Muted.TLabel").pack(side="left", padx=8)
 
         actions = ttk.Frame(self, style="Root.TFrame")
         actions.pack(fill="x", pady=(4, 8))
@@ -448,6 +455,8 @@ class SummaryPage(Page):
                 args += ["--focus", self.focus.get()]
         if self.instructions.get().strip():
             args += ["--instructions", self.instructions.get().strip()]
+        if self.rebuild.get().strip():
+            args += ["--rebuild", self.rebuild.get().strip()]
         return args + [flag for flag, on in self.flags.items() if on.get()]
 
     def start(self) -> None:
