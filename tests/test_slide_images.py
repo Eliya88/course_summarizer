@@ -157,3 +157,23 @@ def test_template_background_is_not_a_figure(tmp_path):
     pdf.output(str(deck))
     assert pdf_utils.extract_main_image(deck, 1, tmp_path / "imgs") is None
     assert Image.open(pdf_utils.extract_main_image(deck, 2, tmp_path / "imgs")).size == (200, 100)
+
+
+def test_vector_chart_is_rendered_but_text_only_page_is_not(tmp_path):
+    """A chart drawn as vectors (no embedded image) is rendered from the page;
+    a page with only a few lines (e.g. a fraction bar) gives nothing."""
+    pdf = FPDF()
+    pdf.set_font("helvetica", size=12)
+    pdf.add_page()
+    pdf.cell(text="Formula")
+    pdf.line(20, 40, 80, 40)
+    pdf.add_page()
+    for i in range(30):
+        pdf.line(20 + 4 * i, 150, 22 + 4 * i, 100 - i)
+    deck = tmp_path / "vec.pdf"
+    pdf.output(str(deck))
+    assert pdf_utils.extract_main_image(deck, 1, tmp_path / "imgs") is None
+    img = pdf_utils.extract_main_image(deck, 2, tmp_path / "imgs")
+    assert img is not None and img.name.endswith("_vec.png")
+    w, h = Image.open(img).size
+    assert 0 < w < 210 / 25.4 * 72 * 3 and h > 0  # cropped, not the whole page
