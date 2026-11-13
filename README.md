@@ -141,9 +141,9 @@ Flags:
 The app (`Course Summarizer.bat`, or `python app.py`) has two tabs:
 **Summary** and **Transcription**. Both use the base folder at the top of the
 window, and each tab keeps its own course. In the Transcription tab, pick a
-course from the list. It lists every `L<n>.mp4` in the course
-that has no `L<n>.srt` beside it (or the `L<n>.m4a` or `L<n>.mp3`, e.g. a phone recording, when there's no
-video),
+course from the list. It lists every `.mp4` in the course, whatever its
+name, that has no `.srt` of the same name beside it (or the `.m4a` or `.mp3`,
+e.g. a phone recording, when there's no video),
 makes an mp3 of each with ffmpeg unless there is one already, runs the
 Hebrew Whisper job on the BGU cluster (`~/transcription/submit.sh`, one GPU
 job per lecture, 3 at a time) and brings back the `.srt` next to the
@@ -153,7 +153,8 @@ PATH and the `bgu-login` host (with its key) in `~/.ssh/config`.
 
 Recordings are named for the order they were given in: `L1.mp4` is the
 first lecture, `L2.mp4` the second. The summarizer gives each transcript to
-the slide deck with the same number. When a recording doesn't line up with
+the slide deck with the same number. A lecture recorded in two parts can be
+`L4.1.mp4` and `L4.2.mp4`: both transcripts go to the L4 deck. When a recording doesn't line up with
 the decks, rename its transcript by hand for the decks it covers: `L1-2.txt`
 is attached to both the L1 and L2 decks, and `L1,3.txt` to L1 and L3 (the
 `.srt` keeps the recording's name, so the transcriber won't redo it). Each deck then

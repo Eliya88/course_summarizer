@@ -1,7 +1,7 @@
 """The app's Transcription tab: transcribe a course's lecture recordings on the BGU cluster.
 
-Finds every L<n>.mp4 (or, with no video, L<n>.m4a or L<n>.mp3) under the
-chosen folder with no L<n>.srt beside it, makes an mp3 of it if missing (ffmpeg), runs the Hebrew Whisper GPU job on the cluster
+Finds every .mp4 (or, with no video, .m4a or .mp3) under the
+chosen folder with no .srt of the same name beside it, makes an mp3 of it if missing (ffmpeg), runs the Hebrew Whisper GPU job on the cluster
 (~/transcription/submit.sh) and brings back the .srt, next to the
 video, and the .txt, into the Transcripts folder beside it, where main.py
 picks it up.
@@ -36,9 +36,9 @@ HOST = "bgu-login"  # ~/.ssh/config alias for slurm.bgu.ac.il, with the cluster 
 # Fail instead of waiting on a password prompt nobody sees, or on a VPN that's down.
 SSH = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
 PARALLEL = 3  # lectures in flight at once; each holds one GPU job while it runs
-LECTURE = re.compile(r"L\d+", re.I)
 POLL = 30  # seconds between checks on a running job
 RETRY, GIVE_UP = 30, 30 * 60  # seconds between tries while the connection is down, and how long to keep trying
+WARN_EVERY = 3 * 60  # seconds between "connection lost" popups
 # How far a lecture got on the cluster, as its first line: done | failed (then the
 # log's end) | running (then submit.sh's last line, then the GPU once the job has one) |
 # uploaded | partial <bytes uploaded>.
@@ -74,9 +74,9 @@ SOURCES = (".mp4", ".m4a", ".mp3")  # a lecture with several of these is listed 
 
 
 def pending(folder: Path) -> list[Path]:
-    """L<n> recordings under `folder` with no .srt of the same name beside them, one per lecture."""
+    """Recordings under `folder` with no .srt of the same name beside them, one per lecture."""
     return sorted((p for p in folder.rglob("*.*")
-                   if p.suffix.lower() in SOURCES and LECTURE.fullmatch(p.stem)
+                   if p.suffix.lower() in SOURCES and not p.stem.endswith(".part")  # a half-made mp3
                    and not p.with_suffix(".srt").exists()
                    and not any(p.with_suffix(s).exists() for s in SOURCES[:SOURCES.index(p.suffix.lower())])),
                   key=lambda p: _natural_key(str(p)))
@@ -166,7 +166,7 @@ class TranscriberPage(Page):
     def start(self) -> None:
         self._scan()
         if not self.videos:
-            messagebox.showinfo("Lecture Transcriber", "Every L<n>.mp4/.m4a/.mp3 in this course already has an .srt."
+            messagebox.showinfo("Lecture Transcriber", "Every .mp4/.m4a/.mp3 in this course already has an .srt."
                                 if self.course.get() else "Choose a course first.")
             return
         self.running = True
@@ -174,6 +174,7 @@ class TranscriberPage(Page):
         self.current: dict[int, str] = {}
         self.rows = {i: ["Waiting", 0.0, time.monotonic()] for i in range(len(self.videos))}
         self.errors: dict[str, str] = {}
+        self.warned = -WARN_EVERY  # when the last "connection lost" popup went up
         self.run_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self._set_status("Running…", ACCENT)
@@ -196,13 +197,14 @@ class TranscriberPage(Page):
                            "-vn", "-ac", "1", "-b:a", "64k", str(part)])
                 part.replace(mp3)
             # Named after the video (path and size), so a later run finds this lecture on the cluster.
-            stem = f"{video.stem}_{hashlib.sha1(f'{video.resolve()}|{video.stat().st_size}'.encode()).hexdigest()[:10]}"
+            # Shell-safe, so a name like "lecture 4.1" works in the cluster commands.
+            stem = f"{re.sub(r'[^A-Za-z0-9._-]', '_', video.stem)}_{hashlib.sha1(f'{video.resolve()}|{video.stat().st_size}'.encode()).hexdigest()[:10]}"
             state, detail = self._state(i, stem)
             if state.startswith("partial"):
                 self._step(i, "Uploading")
                 have, size = int(state.split()[1]), mp3.stat().st_size
                 if have < size:  # sftp's reput carries on a half-uploaded file
-                    batch = f"{'reput' if have else 'put'} {mp3.name} audio/{stem}.mp3.part\n"
+                    batch = f"{'reput' if have else 'put'} \"{mp3.name}\" audio/{stem}.mp3.part\n"
                     self._remote(i, ["sftp", *SSH, "-b", "-", HOST], batch, cwd=mp3.parent)
             started = False
             while state != "done":
@@ -304,8 +306,12 @@ class TranscriberPage(Page):
         self.stage.configure(text=f"{done} of {len(self.rows)} transcribed")
         if finished:
             self._finished()
-        else:
-            self.after(500, self._tick)
+            return
+        if any(r[0].startswith("Connection lost") for r in self.rows.values()) and now - self.warned > WARN_EVERY:
+            messagebox.showwarning("Lecture Transcriber", "Lost the connection to the cluster. Check the VPN; "
+                                   f"the app keeps retrying for {GIVE_UP // 60} min.")
+            self.warned = time.monotonic()  # counted from when it's closed, so they don't pile up
+        self.after(500, self._tick)
 
     def _finished(self) -> None:
         self.running = False
