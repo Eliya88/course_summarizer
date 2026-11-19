@@ -40,7 +40,7 @@ POLL = 30  # seconds between checks on a running job
 RETRY, GIVE_UP = 30, 30 * 60  # seconds between tries while the connection is down, and how long to keep trying
 WARN_EVERY = 3 * 60  # seconds between "connection lost" popups
 # How far a lecture got on the cluster, as its first line: done | failed (then the
-# log's end) | running (then submit.sh's last line, then the GPU once the job has one) |
+# log's end) | running (then submit.sh's last line, then the GPU and progress once the job has started) |
 # uploaded | partial <bytes uploaded>.
 # The job writes its .srt/.txt as it goes, so only submit.sh's exit code says they're whole.
 STATE = """cd ~/transcription; s={0}
@@ -52,6 +52,9 @@ if [ -f logs/$s.rc ]; then
     echo "$(sacct -j "$j" -X -n -o Elapsed 2>/dev/null | xargs)"
   else echo failed; tail -n 5 logs/$s.submit; fi
 elif [ -f logs/$s.submit ]; then echo running; tail -n 1 logs/$s.submit; echo "$gpu"
+  # The audio's length in minutes, then how far the job got, as hh:mm:ss.
+  grep -o 'audio duration: [0-9.]*' logs/whisper_he_$j.out 2>/dev/null | cut -d' ' -f3
+  grep -o '^\\[[0-9:]*' logs/whisper_he_$j.out 2>/dev/null | tail -n 1 | tr -d '['
 elif [ -f ~/audio/$s.mp3 ]; then echo uploaded
 else echo partial $(stat -c %s ~/audio/$s.mp3.part 2>/dev/null || echo 0); fi"""
 # Starts submit.sh detached, so a dropped connection doesn't kill it. It takes an
@@ -213,11 +216,12 @@ class TranscriberPage(Page):
                 if state != "running":  # not started yet, or failed on an earlier run
                     self._remote(i, ["ssh", *SSH, HOST, START.format(stem)])
                     started = True
-                gpu = detail.partition("\n")[2].strip().replace("NVIDIA GeForce ", "")
+                _, gpu, minutes, at = (detail.split("\n") + [""] * 3)[:4]
+                gpu = gpu.strip().replace("NVIDIA GeForce ", "")
                 step = ("Transcribing on the GPU" if "RUNNING" in detail else "Waiting for a GPU") \
                     + (f" ({gpu})" if gpu else "")
-                if self.current.get(i) != step:
-                    self._step(i, step)
+                h, m, sec = (at.strip() or "0:0:0").split(":")
+                self._step(i, step, (int(h) * 60 + int(m) + int(sec) / 60) / float(minutes) if minutes else 0.0)
                 self._wait(POLL)
                 state, detail = self._state(i, stem)
             gpu, _, took = detail.partition("\n")
@@ -237,9 +241,12 @@ class TranscriberPage(Page):
             self.errors[str(video)] = str(e)
             self.events.put((i, "Failed", None))
 
-    def _step(self, i: int, step: str) -> None:
+    def _step(self, i: int, step: str, done: float = 0.0) -> None:
+        """`done`: how much of the step is behind it, moving the bar toward the next step."""
         self.current[i] = step
-        self.events.put((i, step, STEPS[step.split(" (")[0]]))  # "Transcribing on the GPU (RTX 3090)"
+        start = STEPS[step.split(" (")[0]]  # "Transcribing on the GPU (RTX 3090)"
+        end = min((v for v in STEPS.values() if v > start), default=1.0)
+        self.events.put((i, step, start + (end - start) * min(done, 1.0)))
 
     def _state(self, i: int, stem: str) -> tuple[str, str]:
         state, _, detail = self._remote(i, ["ssh", *SSH, HOST, STATE.format(stem)]).strip().partition("\n")
@@ -292,7 +299,8 @@ class TranscriberPage(Page):
                 finished = True
                 continue
             i, status, fraction = event
-            self.rows[i] = [status, self.rows[i][1] if fraction is None else fraction, time.monotonic()]
+            t0 = self.rows[i][2] if status == self.rows[i][0] else time.monotonic()  # the bar moved, the step didn't
+            self.rows[i] = [status, self.rows[i][1] if fraction is None else fraction, t0]
         now = time.monotonic()
         for i, (status, _, t0) in self.rows.items():
             elapsed = int(now - t0)
