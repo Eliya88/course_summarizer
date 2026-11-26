@@ -62,7 +62,7 @@ def test_deep_heading_is_a_sub_heading_not_text(monkeypatch):
     monkeypatch.setattr(pdf_builder, "_write_heading", lambda pdf, text, level: seen.append((text, level)))
     monkeypatch.setattr(pdf_builder, "_write_paragraph", lambda pdf, text: seen.append("para:" + text))
     pdf_builder._render_section(None, "#### Word2Vec\n##### CBOW")
-    assert seen == [("Word2Vec", 4), ("CBOW", 4)]
+    assert seen == [("Word2Vec", 4), ("CBOW", 5)]
 
 
 def test_unsupported_latex_is_rewritten_for_mathtext():
@@ -177,3 +177,35 @@ def test_vector_chart_is_rendered_but_text_only_page_is_not(tmp_path):
     assert img is not None and img.name.endswith("_vec.png")
     w, h = Image.open(img).size
     assert 0 < w < 210 / 25.4 * 72 * 3 and h > 0  # cropped, not the whole page
+
+
+def test_back_to_back_markers_stay_on_separate_lines(tmp_path):
+    deck = make_deck(tmp_path)
+    out = pipeline._resolve_images("a\n@@IMG@@ 1 2\n@@IMG@@ 1 2\nb", [deck], tmp_path / "imgs")
+    lines = out.splitlines()
+    assert len(lines) == 4 and all(Path(l.split(" ", 1)[1]).exists() for l in lines[1:3])
+
+
+def test_vector_figure_inside_a_scaled_form_is_cropped_in_page_space(tmp_path):
+    """Some exporters wrap the whole slide in a form XObject scaled up to the
+    page, so the paths inside measure in tiny form units - the crop must
+    still cover the chart, not a corner of the page."""
+    import pypdfium2 as pdfium
+    pdf = FPDF(format=(10, 10))
+    pdf.add_page()
+    for i in range(30):
+        pdf.line(1 + 0.25 * i, 9, 1.1 + 0.25 * i, 5 - 0.1 * i)
+    flat = tmp_path / "flat.pdf"
+    pdf.output(str(flat))
+    src = pdfium.PdfDocument(str(flat))
+    doc = pdfium.PdfDocument.new()
+    page = doc.new_page(600, 600)
+    obj = src.page_as_xobject(0, doc).as_pageobject()
+    obj.transform(pdfium.PdfMatrix().scale(20, 20))  # 28pt form -> 567pt on the page
+    page.insert_obj(obj)
+    page.gen_content()
+    deck = tmp_path / "formed.pdf"
+    doc.save(str(deck))
+    img = pdf_utils.extract_main_image(deck, 1, tmp_path / "imgs")
+    assert img is not None
+    assert Image.open(img).size[0] > 600  # >200pt of chart, not a ~50pt corner

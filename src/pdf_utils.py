@@ -7,7 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from pypdf import PdfReader, PdfWriter
+from pypdf import PageObject, PdfReader, PdfWriter
+from pypdf.generic import ContentStream
 
 # Embedded images smaller than this are logos/icons, not figures worth showing.
 MIN_IMAGE_BYTES = 20_000
@@ -80,12 +81,50 @@ def chapter_ranges(reader: PdfReader) -> List[Tuple[str, int, int]]:
     ]
 
 
+def _drawn_names(obj) -> set:
+    """XObject names `obj`'s content stream draws ("/Im63 Do")."""
+    content = obj.get_contents() if isinstance(obj, PageObject) else ContentStream(obj, None)
+    if content is None:
+        return set()
+    return {ops[0] for ops, op in content.operations if op == b"Do" and ops}
+
+
+def _raw_images(obj, path: Tuple[str, ...] = (), seen: Optional[set] = None) -> List[Tuple[List[str], bytes]]:
+    """(pypdf image key, stored bytes) for every image XObject `obj` (a page
+    or form) draws, forms included. Only drawn ones: some exporters give every
+    page one shared resource dictionary listing all the deck's images, which
+    would make every image look like it's on every page. The bytes are the
+    stream as stored in the file, NOT decoded: pypdf's `ImageFile.data`
+    decodes and re-encodes the image (pure-Python JPEG 2000 encoding takes
+    minutes on a big slide image), so it is only read for the one figure saved."""
+    seen = set() if seen is None else seen
+    try:
+        xobjects = obj["/Resources"].get_object()["/XObject"].get_object()
+    except (KeyError, AttributeError, TypeError):
+        return []
+    drawn = _drawn_names(obj)
+    found = []
+    for name, ref in xobjects.items():
+        if name not in drawn:
+            continue
+        x = ref.get_object()
+        if id(x) in seen:
+            continue
+        seen.add(id(x))
+        subtype = x.get("/Subtype")
+        if subtype == "/Image":
+            found.append(([*path, name], getattr(x, "_data", b"")))
+        elif subtype == "/Form":
+            found += _raw_images(x, (*path, name), seen)
+    return found
+
+
 @lru_cache(maxsize=None)
 def _template_images(pdf_path: str) -> frozenset:
-    """Image bytes repeated on most pages of the deck: a slide-template
+    """Stored image bytes repeated on most pages of the deck: a slide-template
     background or logo, never the figure a slide is about."""
     pages = PdfReader(pdf_path).pages
-    counts = Counter(d for p in pages for d in {i.data for i in p.images})
+    counts = Counter(d for p in pages for d in {raw for _, raw in _raw_images(p)})
     return frozenset(d for d, c in counts.items() if c > max(2, len(pages) / 2))
 
 
@@ -97,13 +136,14 @@ def extract_main_image(pdf_path: Path, page: int, out_dir: Path) -> Optional[Pat
     if page < 1:
         return None
     try:
-        images = PdfReader(str(pdf_path)).pages[page - 1].images
+        pg = PdfReader(str(pdf_path)).pages[page - 1]
         background = _template_images(str(pdf_path))
-        img = max((i for i in images if len(i.data) >= MIN_IMAGE_BYTES and i.data not in background),
-                  key=lambda i: len(i.data), default=None)
+        key = max(((k, raw) for k, raw in _raw_images(pg) if len(raw) >= MIN_IMAGE_BYTES and raw not in background),
+                  key=lambda kr: len(kr[1]), default=(None,))[0]
         out_dir.mkdir(parents=True, exist_ok=True)
-        if img is None:
+        if key is None:
             return _render_vector_figure(pdf_path, page, out_dir / f"{pdf_path.stem}_p{page}_vec.png")
+        img = pg.images[key]  # decodes this one image only
         out = out_dir / f"{pdf_path.stem}_p{page}{Path(img.name).suffix or '.png'}"
         out.write_bytes(img.data)
         return out
@@ -117,6 +157,19 @@ def extract_main_image(pdf_path: Path, page: int, out_dir: Path) -> Optional[Pat
 MIN_VECTOR_PATHS = 20
 _RENDER_SCALE = 3  # 216 dpi
 _CROP_PAD_PT = 12
+
+
+def _page_bounds(obj) -> Tuple[float, float, float, float]:
+    """`obj`'s bounds in page space. An object inside a form XObject reports
+    them in the form's own space (some exporters wrap a whole slide in a form
+    scaled to the page, so its contents measure 0..1), so map them out
+    through each enclosing form's matrix."""
+    box = obj.get_bounds()
+    form = obj.container
+    while form is not None:
+        box = form.get_matrix().on_rect(*box)
+        form = form.container
+    return box
 
 
 def _render_vector_figure(pdf_path: Path, page: int, out: Path) -> Optional[Path]:
@@ -133,7 +186,7 @@ def _render_vector_figure(pdf_path: Path, page: int, out: Path) -> Optional[Path
         w, h = pg.get_size()
         paths, others = [], []
         for obj in pg.get_objects(max_depth=3):
-            box = obj.get_bounds()
+            box = _page_bounds(obj)
             if (box[2] - box[0]) * (box[3] - box[1]) >= 0.8 * w * h:
                 continue
             if obj.type == pdfium_c.FPDF_PAGEOBJ_PATH:
@@ -149,8 +202,11 @@ def _render_vector_figure(pdf_path: Path, page: int, out: Path) -> Optional[Path
                 l, b, r, t = min(l, ol), min(b, ob), max(r, or_), max(t, ot)
         left, bottom = max(0, l - _CROP_PAD_PT), max(0, b - _CROP_PAD_PT)
         right, top = min(w, r + _CROP_PAD_PT), min(h, t + _CROP_PAD_PT)
-        bitmap = pg.render(scale=_RENDER_SCALE, crop=(left, bottom, w - right, h - top))
-        bitmap.to_pil().save(out)
+        img = pg.render(scale=_RENDER_SCALE, crop=(left, bottom, w - right, h - top)).to_pil()
+        lo, hi = img.convert("L").getextrema()
+        if hi - lo < 32:  # one flat colour: nothing worth showing
+            return None
+        img.save(out)
         return out
     finally:
         doc.close()
