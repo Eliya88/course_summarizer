@@ -63,8 +63,8 @@ def test_process_unit_runs_one_chat_per_part_with_continuous_numbering(tmp_path,
     assert uploads == ["L1_p1-2.pdf", "L1_p3-4.pdf"]
     assert len(chats) == 2
     assert "part 1/2" in chats[0][0][0] and chats[0][0][1] == "L1_p1-2.pdf"
-    assert "Use at most 3 topics" in chats[0][0][0]  # 2 slides -> the floor of 3
-    assert "- Topic 3: Gamma\n- Topic 4: Delta" in chats[1][2][0]
+    assert "Use at most 3 sub-topics" in chats[0][0][0]  # 2 slides -> the floor of 3
+    assert '- "### 3. Gamma"\n- "### 4. Delta"' in chats[1][2][0]
     assert "1. Alpha\n2. Beta\n3. Gamma\n4. Delta" in markdown
     assert "- **Term1** - x\n- **Term2** - x" in markdown
 
@@ -129,7 +129,7 @@ def test_later_part_with_transcript_skips_earlier_topics(tmp_path, monkeypatch):
     assert len(agendas) == 2
     assert agendas[0].endswith(pipeline.prompts.TRANSCRIPT_LATER_RULE.format(later="text of L1_p3-4.pdf"))
     assert "already covers" not in agendas[0]
-    assert agendas[1].endswith(pipeline.prompts.TRANSCRIPT_COVERED_RULE.format(covered="- Alpha\n- Beta"))
+    assert pipeline.prompts.TRANSCRIPT_COVERED_RULE.format(covered="- Alpha\n- Beta") in agendas[1]
     assert glossaries[0] == pipeline.prompts.GLOSSARY_PROMPT
     assert glossaries[1].endswith(pipeline.prompts.GLOSSARY_COVERED_RULE.format(terms="Helot"))
 
@@ -141,9 +141,9 @@ def test_slide_agenda_allows_one_topic_per_three_slides(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline.claude_client, "Chat", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline.claude_client, "send", lambda chat, parts: sends.append(parts[0]) or "1. A\n2. B")
 
-    pipeline._summarize_part(None, course, "sys", "d", "L2", [], 1, [tmp_path / "L2.pdf"])
+    pipeline._summarize_part(None, course, "sys", "d", "L2", [], [], [tmp_path / "L2.pdf"])
 
-    assert "Use at most 8 topics" in sends[0]
+    assert "Use at most 8 sub-topics" in sends[0]
 
 
 def test_book_unit_is_one_chat_of_three_calls(tmp_path, monkeypatch):
@@ -164,7 +164,7 @@ def test_book_unit_is_one_chat_of_three_calls(tmp_path, monkeypatch):
 
     assert len(sends) == 3  # agenda, all topics, glossary
     assert sends[0].endswith(pipeline.prompts.BOOK_AGENDA_RULE + pipeline.prompts.FOCUS_AGENDA_RULE)
-    assert "- Topic 5: E" in sends[1] and "4-5 pages" in sends[1]
+    assert "\"### 5. E\"" in sends[1] and "4-5 pages" in sends[1]
 
 
 def test_transcripts_join_their_lecture_or_become_their_own(tmp_path):

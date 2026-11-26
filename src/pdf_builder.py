@@ -475,15 +475,19 @@ def _write_paragraph(pdf: FPDF, text: str, size: float = 11.5, top_gap: float = 
     pdf.page_dirty = True
 
 
-def _write_toc_item(pdf: FPDF, number: int, title: str, link: Optional[int],
+def _write_toc_item(pdf: FPDF, number, title: str, link: Optional[int],
                     size: float = 12.0, top_gap: float = 2.6) -> None:
     """One clickable table-of-contents line on the cover page. Drawn in the
-    heading color so it reads as a link, and jumping to `link`'s chapter."""
+    heading color so it reads as a link, and jumping to `link`'s chapter.
+    A sub-topic number ("3.2") is indented and smaller under its topic."""
+    sub = "." in str(number)
+    indent = 14 if sub else 6
     pdf.set_text_color(*HEADING_COLOR)
-    pdf.ln(top_gap)
-    pdf.set_right_margin(pdf.r_margin + 6)
-    _write_richtext(pdf, f"{number}. {title}", size=size, link=link)
-    pdf.set_right_margin(pdf.r_margin - 6)
+    pdf.ln(1.2 if sub else top_gap)
+    pdf.set_right_margin(pdf.r_margin + indent)
+    _write_richtext(pdf, f"{number} {title}" if sub else f"{number}. {title}",
+                    size=size - 1.5 if sub else size, link=link)
+    pdf.set_right_margin(pdf.r_margin - indent)
     pdf.set_text_color(*INK_COLOR)
     pdf.page_dirty = True
 
@@ -508,13 +512,30 @@ def _write_list_item(pdf: FPDF, text: str, size: float = 11.5, top_gap: float = 
 _SUBJECT_HEADING_TEXT = {"מושגי מפתח", "שאלה ממבחנים קודמים"}
 
 
-def _write_heading(pdf: FPDF, text: str, level: int) -> None:
+# A sub-topic (or a heading inside one) that would start this far down the
+# page moves to the next page instead, so a heading is never left at the
+# bottom with its content overleaf. Fractions of the writable height.
+_LATE_HEADING_START = {4: 0.75, 5: 0.85}
+
+
+def _page_fill(pdf: FPDF) -> float:
+    """How much of the current page's writable height is used, 0..1."""
+    return (pdf.get_y() - pdf.t_margin) / (pdf.page_break_trigger - pdf.t_margin)
+
+
+def _write_heading(pdf: FPDF, text: str, level: int) -> float:
+    """Draws the heading and returns the y it starts at (after any page break)."""
     is_subject_heading = level == 3 or text.strip() in _SUBJECT_HEADING_TEXT
     if is_subject_heading and pdf.page_dirty:
         pdf.add_page()
+    elif level in _LATE_HEADING_START and pdf.page_dirty and _page_fill(pdf) > _LATE_HEADING_START[level]:
+        pdf.add_page()
+        is_subject_heading = True  # starts its page the same way: no gap above
+    top = pdf.get_y()
 
-    sizes = {1: 24, 2: 17, 3: 13.5, 4: 12}
-    gaps = {1: 4, 2: 8, 3: 6, 4: 4}
+    # 3 = topic, 4 = sub-topic, 5 = a heading inside one.
+    sizes = {1: 24, 2: 17, 3: 14.5, 4: 13, 5: 12}
+    gaps = {1: 4, 2: 8, 3: 6, 4: 7, 5: 4}
     pdf.ln(0 if is_subject_heading and not pdf.page_dirty else gaps[level])
     pdf.set_font(FONT_FAMILY, style="B", size=sizes[level])
     pdf.set_text_color(*HEADING_COLOR)
@@ -529,6 +550,7 @@ def _write_heading(pdf: FPDF, text: str, level: int) -> None:
         pdf.line(pdf.l_margin, y, pdf.w - pdf.r_margin, y)
         pdf.ln(3)
     pdf.page_dirty = True
+    return top
 
 
 _LIST_RE = re.compile(r"^\s*(?:[-*]|\d+[\.\)])\s+(.*)$")
@@ -538,9 +560,9 @@ _FORMULA_RE = re.compile(r"^@@F@@\s*(.*)$")
 _IMG_RE = re.compile(r"^@@IMG@@\s*(.+)$")
 # Cover-page table-of-contents entry: "@@TOC@@ 3|Corpus Linguistics".
 _TOC_RE = re.compile(r"^@@TOC@@\s*(\d+)\|(.*)$")
-# A chapter's numbered topic list ("3. title" under "## נושאים:") and the
-# "### 3. title" heading each item jumps to.
-_NUMBERED_RE = re.compile(r"^(\d+)[\.\)]\s+(.*)$")
+# A chapter's numbered topic list ("3. title" or sub-topic "3.2 title" under
+# "## נושאים:") and the "### 3. title" / "#### 3.2 title" heading each item jumps to.
+_NUMBERED_RE = re.compile(r"^(\d+[\.\)]|\d+\.\d+\.?)\s+(.*)$")
 _TOPICS_HEADING = "נושאים"
 
 
@@ -578,20 +600,21 @@ def _render_section(pdf: FPDF, section_md: str,
             # An empty "### " the model sometimes leaves behind would draw a blank subject page.
             title = (heading_match.group(2) or "").strip()
             if title:
-                # "####" and deeper, which the model sometimes uses inside a topic, render as one sub-heading level.
-                level = min(len(heading_match.group(1)), 4)
+                # "#####" and deeper, which the model sometimes uses inside a topic, render as one sub-heading level.
+                level = min(len(heading_match.group(1)), 5)
                 in_topics = level == 2 and title.rstrip(":").strip() == _TOPICS_HEADING
-                _write_heading(pdf, title, level)
                 numbered = _NUMBERED_RE.match(title)
-                if level == 3 and numbered and numbered.group(1) in topic_links:
-                    pdf.set_link(topic_links.pop(numbered.group(1)), page=pdf.page_no(), y=0)
+                link = topic_links.pop(numbered.group(1).rstrip(".)"), None) if level in (3, 4) and numbered else None
+                top = _write_heading(pdf, title, level)
+                if link is not None:  # a topic starts its page; a sub-topic usually doesn't
+                    pdf.set_link(link, page=pdf.page_no(), y=top if level == 4 else 0)
             continue
 
         topic_match = _NUMBERED_RE.match(line.strip()) if in_topics else None
         if topic_match:
-            number = topic_match.group(1)
+            number = topic_match.group(1).rstrip(".)")
             topic_links[number] = pdf.add_link(page=1)
-            _write_toc_item(pdf, int(number), topic_match.group(2).strip(), topic_links[number])
+            _write_toc_item(pdf, number, topic_match.group(2).strip(), topic_links[number])
             continue
 
         list_match = _LIST_RE.match(line)

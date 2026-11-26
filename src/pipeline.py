@@ -16,7 +16,7 @@ import math
 import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from . import claude_client, pdf_utils, prompts
 from .log import log, set_unit
@@ -44,18 +44,80 @@ UNIT_WORKERS = 4
 PARTS_PER_FILE = 2
 
 
-def _parse_agenda(agenda_text: str) -> List[str]:
-    titles = []
+# Sub-topic title for a later part's text on a main topic an earlier part began.
+CONTINUED_TITLE = "המשך"
+# "1. B+Tree" (main topic) or "1.1 מקרה פשוט" (sub-topic), maybe after a "-" bullet.
+_AGENDA_LINE_RE = re.compile(r"^(?:[-*]\s*)?(\d+)(\.\d+)?[\.\)]?\s+(.*)$")
+
+
+def _parse_agenda(agenda_text: str) -> List[Tuple[str, List[str]]]:
+    """(main topic, its sub-topics) pairs, in order. An unnumbered line is a main topic."""
+    mains = []
     for line in agenda_text.splitlines():
         line = line.strip()
         if not line:
             continue
-        # strip leading list markers like "1.", "1)", "-", "*"
-        cleaned = re.sub(r"^(\d+[\.\)]|[-*])\s*", "", line).strip()
-        cleaned = re.sub(r"\*+", "", cleaned).strip()
-        if cleaned:
-            titles.append(cleaned)
-    return titles if len(titles) >= 2 else ["Full deck"]
+        m = _AGENDA_LINE_RE.match(line)
+        title = re.sub(r"\*+", "", m.group(3) if m else re.sub(r"^[-*]\s*", "", line)).strip()
+        if not title:
+            continue
+        if m and m.group(2) and mains:
+            mains[-1][1].append(title)
+        else:
+            mains.append((title, []))
+    leaves = sum(len(subs) or 1 for _, subs in mains)
+    return mains if leaves >= 2 else [("Full deck", [])]
+
+
+def _number_outline(mains: List[Tuple[str, List[str]]], outline: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """(number, title) rows for `mains` - "3" for a main topic, "3.2" for a
+    sub-topic - numbered on from the unit's earlier parts' `outline`. A first
+    main topic named like the last one before continues it: its sub-topics
+    keep counting under the same number (one "continued" sub-topic if it has
+    none)."""
+    last = next(((n, t) for n, t in reversed(outline) if "." not in n), None)
+    main_no = int(last[0]) if last else 0
+    rows = []
+    for i, (title, subs) in enumerate(mains):
+        if i == 0 and last and title == last[1]:
+            sub_no = sum(1 for n, _ in outline if n.startswith(f"{main_no}."))
+            subs = subs or [CONTINUED_TITLE]
+        else:
+            main_no, sub_no = main_no + 1, 0
+            rows.append((str(main_no), title))
+        for sub in subs:
+            sub_no += 1
+            rows.append((f"{main_no}.{sub_no}", sub))
+    return rows
+
+
+def _written_topics(rows: List[Tuple[str, str]]) -> List[Tuple[str, str, List[str]]]:
+    """(number, title, heading lines) for every topic that gets its own text:
+    each sub-topic, and each main topic without any. A main topic's own "###"
+    heading goes right before its first sub-topic's "####" one."""
+    topics, pending = [], []
+    for i, (n, t) in enumerate(rows):
+        if "." in n:
+            topics.append((n, t, pending + [f"#### {n} {t}"]))
+            pending = []
+        elif i + 1 < len(rows) and rows[i + 1][0].startswith(n + "."):
+            pending = [f"### {n}. {t}"]
+        else:
+            topics.append((n, t, [f"### {n}. {t}"]))
+    return topics
+
+
+def _fix_headings(body: str, topics: List[Tuple[str, str, List[str]]]) -> str:
+    """Replaces the heading the model wrote for each topic with its exact
+    heading lines, so the numbering is right and main topics get theirs."""
+    for n, _, lines in topics:
+        body = re.sub(rf"^#+[ \t]*{re.escape(n)}[\.\)]?[ \t].*$", lambda _: "\n".join(lines), body,
+                      count=1, flags=re.M)
+    return body
+
+
+def _outline_text(rows: List[Tuple[str, str]]) -> str:
+    return "\n".join(f"{n} {t}" if "." in n else f"{n}. {t}" for n, t in rows)
 
 
 def _unit_cache_path(course: CourseConfig, unit: Unit) -> Path:
@@ -153,7 +215,8 @@ def _merge_glossaries(glossaries: List[str]) -> str:
     return "\n".join(lines)
 
 
-_IMG_MARKER_RE = re.compile(r"^\s*@@IMG@@\s*(\d+)\s+(\d+)\s*$", re.M)
+# [ \t], not \s: \s* would match the newline too and glue two marker lines into one.
+_IMG_MARKER_RE = re.compile(r"^[ \t]*@@IMG@@[ \t]*(\d+)[ \t]+(\d+)[ \t]*$", re.M)
 
 
 def _resolve_images(body: str, part_paths: List[Path], img_dir: Path) -> str:
@@ -170,18 +233,19 @@ def _resolve_images(body: str, part_paths: List[Path], img_dir: Path) -> str:
 
 
 def _summarize_part(client, course: CourseConfig, system_instruction: str, digest: str, label: str,
-                    uploaded_files: List, first_index: int, part_paths: List[Path], transcript_words: int = 0,
-                    covered_titles: List[str] = (), later_slides: str = "", covered_terms: List[str] = ()):
+                    uploaded_files: List, outline: List[Tuple[str, str]], part_paths: List[Path],
+                    transcript_words: int = 0, covered_titles: List[str] = (), later_slides: str = "",
+                    covered_terms: List[str] = ()):
     """One chat over one part of a unit: agenda -> outline -> sections ->
-    glossary. Topic numbers start at `first_index` so they keep counting
-    across parts. `part_paths` are the local chunk PDFs behind
+    glossary. `outline` is the unit's earlier parts' numbered topics, so the
+    numbers keep counting across parts. `part_paths` are the local chunk PDFs behind
     `uploaded_files`, used to pull out the slide images the model points at.
     `transcript_words` > 0 means a lecture transcript is attached too; with
     no `part_paths` it is the only source. `covered_titles` are the topics of
     the unit's earlier parts, and `later_slides` the text of its later parts'
     slides: a transcript part leaves both alone. `covered_terms` are the
-    earlier parts' glossary terms. Returns (topic titles, section bodies,
-    glossary)."""
+    earlier parts' glossary terms. Returns ((number, title) topic rows,
+    section bodies, glossary)."""
     chat = claude_client.Chat(client, course.model, system_instruction, SECTION_MAX_OUTPUT_TOKENS)
 
     agenda_prompt = prompts.AGENDA_PROMPT.format(digest=digest, unit_name=label)
@@ -202,12 +266,16 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
                     covered="\n".join(f"- {t}" for t in covered_titles))
             if later_slides:
                 agenda_prompt += prompts.TRANSCRIPT_LATER_RULE.format(later=later_slides)
-    section_titles = _parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files]))
-    log(f"  Agenda: {len(section_titles)} section(s)")
+    open_main = next((t for n, t in reversed(outline) if "." not in n), None)
+    if open_main:
+        agenda_prompt += prompts.OPEN_MAIN_RULE.format(title=open_main)
+    rows = _number_outline(_parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files])), outline)
+    topics = _written_topics(rows)
+    log(f"  Agenda: {len(topics)} section(s)")
 
     # A book's few broad topics are written in one call, so there are no
     # batches to keep apart and the boundary-planning call is skipped.
-    batch_size = len(section_titles) if course.book else SECTION_BATCH_SIZE
+    batch_size = len(topics) if course.book else SECTION_BATCH_SIZE
     if not course.book:
         log("  Planning content boundaries...")
         claude_client.send(chat, [prompts.OUTLINE_PROMPT])
@@ -218,17 +286,19 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
         length_rule = prompts.TRANSCRIPT_LENGTH_RULE if part_paths else prompts.TRANSCRIPT_ONLY_LENGTH_RULE
     else:
         length_rule = prompts.SLIDE_LENGTH_RULE
-    numbered_titles = list(enumerate(section_titles, start=first_index))
-    last_index = numbered_titles[-1][0]
+    # A continued main topic's title is in the earlier parts' outline.
+    main_titles = {n: t for n, t in [*outline, *rows] if "." not in n}
     section_bodies = []
-    for batch_start in range(0, len(numbered_titles), batch_size):
-        batch = numbered_titles[batch_start:batch_start + batch_size]
-        first_i, last_i = batch[0][0], batch[-1][0]
-        log(f"  Writing topics {first_i}-{last_i}/{last_index}: "
-              f"{', '.join(t for _, t in batch)}")
-        topic_list = "\n".join(f"- Topic {i}: {t}" for i, t in batch)
+    for batch_start in range(0, len(topics), batch_size):
+        batch = topics[batch_start:batch_start + batch_size]
+        log(f"  Writing topics {batch[0][0]}-{batch[-1][0]}/{topics[-1][0]}: "
+              f"{', '.join(t for _, t, _ in batch)}")
+        topic_list = "\n".join(
+            f'- "{lines[-1]}"' + (f' (part of main topic "{main_titles[n.split(".")[0]]}")' if "." in n else "")
+            for n, _, lines in batch)
         body = claude_client.send(chat, [prompts.SECTION_PROMPT.format(
             n=len(batch), topic_list=topic_list, length_rule=length_rule)])
+        body = _fix_headings(body, batch)
         section_bodies.append(_resolve_images(body, part_paths, course.output_dir / "cache" / "images"))
 
     log("  Writing glossary...")
@@ -236,7 +306,7 @@ def _summarize_part(client, course: CourseConfig, system_instruction: str, diges
     if covered_terms:
         glossary_prompt += prompts.GLOSSARY_COVERED_RULE.format(terms=", ".join(covered_terms))
     glossary_text = claude_client.send(chat, [glossary_prompt])
-    return section_titles, section_bodies, glossary_text
+    return rows, section_bodies, glossary_text
 
 
 def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cache: bool = True) -> str:
@@ -266,13 +336,16 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     transcript_words = sum(len(d["source"]["data"].split()) for d in transcript_docs)
 
     system_instruction = _system_instruction(course, unit)
-    all_titles, section_bodies, glossaries = [], [], []
+    outline, section_bodies, glossaries = [], [], []
     for k, part in enumerate(parts, start=1):
         label = unit.name if len(parts) == 1 else f"{unit.name} (part {k}/{len(parts)})"
         part_cache = _part_cache_path(course, unit, k, len(parts))
         if use_cache and part_cache.exists():
             log(f"  Part {k}/{len(parts)}: using cached result")
-            titles, bodies, glossary = json.loads(part_cache.read_text(encoding="utf-8"))
+            rows, bodies, glossary = json.loads(part_cache.read_text(encoding="utf-8"))
+            rows = [tuple(r) if isinstance(r, list) else r for r in rows]
+            if rows and isinstance(rows[0], str):  # cached before topics had sub-topics
+                rows = _number_outline([(t, []) for t in rows], outline)
         else:
             names = [p.name for p in part + transcripts]
             log(f"  Part {k}/{len(parts)}: uploading {', '.join(names)} to Claude...")
@@ -282,22 +355,21 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
                 uploaded_files += transcript_docs
                 later_slides = "\n\n".join(
                     pdf_utils.extract_text(p) for later in parts[k:] for p in later)[:LATER_SLIDES_MAX_CHARS]
-            titles, bodies, glossary = _summarize_part(
+            rows, bodies, glossary = _summarize_part(
                 client, course, system_instruction, digest, label, uploaded_files,
-                first_index=len(all_titles) + 1, part_paths=part, transcript_words=transcript_words,
-                covered_titles=all_titles, later_slides=later_slides.strip(),
+                outline=outline, part_paths=part, transcript_words=transcript_words,
+                covered_titles=[t for _, t, _ in _written_topics(outline)], later_slides=later_slides.strip(),
                 covered_terms=_GLOSSARY_TERM_RE.findall("\n".join(glossaries)),
             )
             part_cache.parent.mkdir(parents=True, exist_ok=True)
-            part_cache.write_text(json.dumps([titles, bodies, glossary], ensure_ascii=False), encoding="utf-8")
-        all_titles += titles
+            part_cache.write_text(json.dumps([rows, bodies, glossary], ensure_ascii=False), encoding="utf-8")
+        outline += rows
         section_bodies += bodies
         glossaries.append(glossary)
 
-    agenda_text = "\n".join(f"{i}. {t}" for i, t in enumerate(all_titles, start=1))
     markdown = "\n\n".join([
         f"# {unit.name}",
-        "## נושאים:\n\n" + agenda_text,
+        "## נושאים:\n\n" + _outline_text(outline),
         *section_bodies,
         "## מושגי מפתח\n\n" + _merge_glossaries(glossaries),
     ])
