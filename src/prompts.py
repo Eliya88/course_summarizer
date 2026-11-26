@@ -4,7 +4,17 @@ and are easy to tune without touching pipeline logic."""
 # Bump this whenever SYSTEM_INSTRUCTION/AGENDA/SECTION/GLOSSARY prompts change
 # in a way that would make previously-cached results stale (e.g. language,
 # required formatting). It's folded into each unit's cache key.
-PROMPT_VERSION = "v11-split-parts"
+PROMPT_VERSION = "v14-figures-and-lists"
+# Bump when a book-only prompt changes; it is folded only into book units'
+# cache keys, so regular courses keep their cached summaries.
+BOOK_PROMPT_VERSION = "b3-question-refs"
+# Same idea for the transcript-only prompts: folded only into the keys of
+# units that have a lecture transcript.
+TRANSCRIPT_PROMPT_VERSION = "t4-beyond-slides"
+# Bumped on its own for units with a transcript and no slides.
+TRANSCRIPT_ONLY_PROMPT_VERSION = "to1-no-digest-content"
+# Bumped on its own for decks that share a recording with another deck.
+TRANSCRIPT_SHARED_PROMPT_VERSION = "ts1-other-decks"
 
 # Versions the past-exam question blocks separately from the summary prompts
 # above, so tuning EXAM_PROMPT only invalidates cached exam pages and leaves
@@ -28,12 +38,14 @@ or lecture notes, not a description of a lecture. NEVER write meta-commentary ph
 slides/course/presentation/lecture itself, such as "כפי שהוצג בשקופיות", "כפי שנלמד בקורס", "כפי שהודגם", \
 "להלן פירוט של...", "בשקופיות X-Y", "המצגת מציגה", or any similar framing. Do not mention slide numbers, \
 "exhibits", or that content came from a presentation. Just state the substantive content directly, as if \
-it were your own explanation, with no introductory throat-clearing sentence.
+it were your own explanation, with no introductory throat-clearing sentence. The only two exceptions are \
+the "@@IMG@@" figure marker and the "(בשקופית: ...)" correction note described below.
 - Bold ONLY these three patterns, nothing else:
   (a) A definition pattern: "**Term**: explanation" - bold just the term (and the colon), never any word \
 in the explanation that follows, even if that word is itself a technical term.
   (b) A short headline/lead-in sentence that introduces a list right after it, ending in a colon - bold \
-the whole lead-in sentence, e.g. "**השלבים באלגוריתם הם:**".
+the whole lead-in sentence, e.g. "**השלבים באלגוריתם הם:**". Use at most one lead-in per list, and \
+never one that just repeats the topic heading above it.
   (c) EVERY bullet point, without exception, must open with a short bolded lead (a term, name, or a \
 2-5 word phrase capturing its main point) before the unbolded explanation continues - even when the \
 bullet isn't a strict "Term: definition" pair. For example "**היתרון המרכזי**: הגישה מהירה משמעותית..." \
@@ -60,25 +72,160 @@ line after it. This keeps formulas from breaking mid-sentence right-to-left text
 typeable text using ordinary keyboard characters, e.g. "P(w) היא ההסתברות הקודמת" or "כאשר x > 0" - do NOT \
 use LaTeX/backslash commands inline in a Hebrew sentence, since only the standalone "@@F@@" line is \
 rendered as real math; inline LaTeX would show up as broken literal text.
+  (3) Right after every standalone formula, explain EVERY parameter/variable/symbol that appears in it - \
+none may be left unexplained, even ones that seem obvious or were defined earlier. Write this as a short \
+Hebrew lead-in such as "כאשר:" followed by a bullet list with one bullet per symbol, each opening with the \
+bolded symbol written as plain typeable text and then what it means (e.g. "**P(w)**: ההסתברות הקודמת של \
+המילה w"). Also say in a sentence what the formula as a whole computes or expresses.
   Do NOT spend space describing the visual appearance of illustrative images, photos, memes, icons, or \
 decorative diagrams - if a slide is primarily illustrative rather than technical, mention its point in \
 one short sentence at most and move on. Never invent information that is not present in the provided \
-materials.
+materials. You may add a short illustrative example of your own when it genuinely clarifies a point, but \
+end it with the label "(דוגמה נוספת)" so the student knows it is not from the material.
+- When a chart or table carries numbers, keep its key numbers in your text and do not claim more than \
+they actually show (e.g. do not say "surpasses humans" if only one of several benchmarks does).
+- If the material states something you are certain is factually wrong (e.g. a wrong year), write the \
+correct fact and follow it with "(בשקופית: <what the slide said>)".
 - The full-course digest is only for context and cross-referencing (e.g. connecting to a concept from an \
 earlier lecture). The current unit's PDF is what you must cover in full.
-- Do not add a title heading yourself - the surrounding document already provides one."""
+- Do not add a title heading yourself - the surrounding document already provides one.{extra}"""
 
-AGENDA_PROMPT = """Here is the full-course context digest, for cross-referencing only:
+# Length rule for each section. The slide one is the regular wording; book
+# pages are much denser than slides, so a book gets a page ratio instead.
+SLIDE_LENGTH_RULE = ("Keep each topic tight: aim for roughly 1.5 times the length of its slide text, never "
+                     "pad with restatements or summaries of what you just said.")
+# Added to AGENDA_PROMPT for a slide deck: without it the model titles almost
+# every slide as its own topic. {max_topics} scales with the deck's length.
+SLIDE_AGENDA_RULE = ("\n\nUse at most {max_topics} sub-topics in total, in slide order, under about 1-4 main "
+                     "topics. Group consecutive slides on the "
+                     "same theme under one sub-topic - never one sub-topic per slide (for example, instruction, "
+                     "alignment and reasoning tuning are one topic). Merge course-admin slides (syllabus, "
+                     "coursework, textbook) into one short main topic without sub-topics. This is a ceiling, not a target: "
+                     "use fewer when the deck is simple.")
+# Added to AGENDA_PROMPT for a book: a chapter has far more sub-topics than
+# a slide deck, and every topic adds output, so the book gets a few broad ones.
+BOOK_AGENDA_RULE = ("\n\nThis is a long textbook chapter: group its content into at most 8 sub-topics, "
+                    "in the order they appear, each spanning several of the chapter's sub-sections, under a "
+                    "few main topics. Do not add a closing summary or recap topic.")
+# Added after BOOK_AGENDA_RULE when there is an assignment, so the 8-topic
+# limit never squeezes out something the assignment depends on.
+FOCUS_AGENDA_RULE = ("\n\nEvery subject of the assignment that this chapter teaches must be named in one of "
+                     "these topics - including supporting material it depends on, such as how data is split "
+                     "into training and test sets or how unknown words are handled - group topics to stay "
+                     "within the limit, but never merge such a subject away or drop it. Also include an "
+                     "assignment subject the chapter does not teach when it directly extends this chapter's "
+                     "material (for example another variant of a method the chapter explains); leave out "
+                     "subjects that belong to other chapters. Name topics after the material, never after "
+                     "the assignment's questions.")
+BOOK_LENGTH_RULE = ("Keep each topic tight: write about one page of summary per 4-5 pages of the book, "
+                    "never pad with restatements or summaries of what you just said.")
+
+# Appended to SYSTEM_INSTRUCTION through {extra} - empty for regular runs.
+BOOK_NOTE = """
+- The attached PDF is a textbook chapter, not a slide deck: wherever these instructions say "slides", \
+read "book pages". Skip the chapter's "Historical Notes", "Exercises", and bibliography sections. Use the \
+"@@IMG@@" marker only for a figure that is an embedded picture on the page."""
+
+# A lecture transcript (Transcript folder) is speech recognition: noisy, but
+# the lecturer's own explanations. Shared by both transcript notes below.
+TRANSCRIPT_NOISE = """ The transcript is automatic speech recognition: words are misheard, sentences \
+break off, and it is mixed with small talk, questions from the room and course logistics. Skip small \
+talk, logistics, asides about current events and anything not taught as course material. Never quote \
+the transcript or write that the lecturer said something - teach the content in your own voice."""
+
+TRANSCRIPT_NOTE = """
+- A plain-text transcript of the recorded lecture is attached next to the slides. Use it to add what the \
+lecturer explained, the examples they gave and the points they stressed that the slides leave out. When \
+the lecturer takes a slide's subject further than the slide does - more methods, variants, parameters or \
+formulas - teach all of it in that slide's topic, as fully as the slide's own content. The \
+slides and the course digest stay the authority on terms, names and spelling - where the transcript \
+garbles a term, write it as they spell it. The transcript covers the whole lecture while the attached \
+slides may be only part of the deck: use only the passages about the material on these slides.""" + TRANSCRIPT_NOISE
+
+TRANSCRIPT_ONLY_NOTE = """
+- This unit has no slides: the attached plain-text transcript of the recorded lecture is your primary \
+content source - wherever these instructions say "slides" or "deck", read "transcript". Many names and \
+terms in it are misheard: write each one in its correct form, using the course digest and your knowledge \
+of the subject, and leave out a term you cannot identify rather than guess. Use the digest only for that \
+and for connecting to other lectures: never add a topic, scholar, argument or example the transcript does \
+not discuss. There are no figures, so never write the "@@IMG@@" marker.""" + TRANSCRIPT_NOISE
+
+# Added to TRANSCRIPT_NOTE when a recording ran over more than one deck
+# (named for a range, e.g. "L1-2.txt").
+TRANSCRIPT_SHARED_NOTE = """ The recordings do not line up with the decks: an attached transcript also \
+covers other lectures' slides, and this deck's material may be spread over several attached transcripts. \
+Take the passages about this deck's slides from wherever they are, and leave out the passages about the \
+other lectures' slides, whose text is:
+{other}"""
+
+# Agenda and length rules for a unit with a transcript, used in place of (or,
+# with slides, on top of) the slide rules above.
+# A deck is summarized in parts, each in its own chat: a later part is told
+# the main topic the previous one ended in, so a subject cut in two stays one.
+OPEN_MAIN_RULE = ("\n\nThe previous part of this lecture's summary ended in the main topic \"{title}\". If "
+                  "this part opens by continuing that subject, make your first main topic exactly \"{title}\".")
+
+TRANSCRIPT_AGENDA_RULE = (" Topics follow the slides: add a topic from the transcript only for a subject "
+                          "the lecturer spends real time on that no attached slide covers.")
+# The whole transcript goes with every part of a deck, so a later part is
+# told which topics the earlier parts already wrote up.
+TRANSCRIPT_COVERED_RULE = ("\n\nAn earlier part of this lecture's summary already covers these topics:\n{covered}\n"
+                           "Do not make a topic of any of them, and when writing your topics leave out "
+                           "transcript passages that belong to them.")
+# ...and an earlier part is told what the later slides say, so it leaves the
+# transcript passages about them to the part that has those slides.
+TRANSCRIPT_LATER_RULE = ("\n\nA later part of this lecture's summary covers the deck's next slides, whose text "
+                         "is:\n{later}\nDo not make a topic of their subjects, and when writing your topics leave "
+                         "out transcript passages about them, even where they touch your slides.")
+TRANSCRIPT_ONLY_AGENDA_RULE = ("\n\nUse at most {max_topics} sub-topics in total, under a few main topics, in the order the lecture discusses them. "
+                               "Group consecutive talk on the same theme under one sub-topic, and leave out small "
+                               "talk and course logistics. This is a ceiling, not a target: use fewer "
+                               "when the lecture is simple.")
+# Sized by the transcript too: a short slide the lecturer talked over at
+# length (temperature, top-k, top-p under "Decoding Strategies") needs the room.
+TRANSCRIPT_LENGTH_RULE = ("Keep each topic tight: aim for roughly 1.5 times the length of its slide text plus "
+                          "about a quarter of the length of the transcript passages about it, and never pad "
+                          "with restatements or summaries of what you just said.")
+TRANSCRIPT_ONLY_LENGTH_RULE = ("Keep each topic tight: aim for about a quarter of the length of the transcript "
+                               "passages it covers, and never pad with restatements or summaries of what you "
+                               "just said.")
+
+# --instructions: the student's own extra request, appended last so it wins.
+INSTRUCTIONS_NOTE = """
+- The student added these instructions - follow them throughout:
+{instructions}"""
+
+FOCUS_NOTE = """
+- The student is studying this material for the assignment below. Explain in depth, with worked \
+examples of the same kind, every concept, formula, and algorithm the assignment relies on - including \
+supporting material such as data splits and the handling of unknown words; cover the rest of the material \
+briefly. When the assignment uses a method that directly extends this chapter's material but the chapter \
+does not explain it, explain it briefly from standard knowledge and end that explanation with \
+"(הרחבה שאינה מהספר)".
+- Where a topic is what one of the assignment's questions relies on, you may point to that question by \
+its number and subject in one short line (e.g. "רלוונטי לשאלה 2 בתרגיל - Laplace smoothing"), but never \
+copy the question's wording, and never solve it, outline or hint at its solution. Never reuse its data, \
+numbers, words, or examples. Do not add a \
+proof or derivation the assignment asks for unless the book itself presents it, and then give it as the \
+book does. Teach the material so the student can solve the assignment alone.
+--- START OF ASSIGNMENT ---
+{focus}
+--- END OF ASSIGNMENT ---"""
+
+AGENDA_PROMPT ="""Here is the full-course context digest, for cross-referencing only:
 
 {digest}
 
 Above is the native PDF slide deck for this unit: "{unit_name}".
 
-Produce ONLY a numbered table-of-contents in Hebrew of every distinct topic covered in this deck, in the \
-order it appears. Each line must be a SHORT TOPIC LABEL ONLY - one to three words, like a chapter title \
-(for example "מבוא" or "Word Embeddings") - never a full sentence or a description of what will be \
-covered. Do not explain or summarize content yet - this is just the list of topic titles you will cover \
-in detail on the following turns."""
+Produce ONLY a two-level numbered table-of-contents in Hebrew of the topics covered in this deck, in the \
+order they appear: a few broad main topics, each on a line like "1. B+Tree", and under each its sub-topics, \
+each on its own line like "1.1 מקרה פשוט בהכנסה", "1.2 ...". A main topic is a whole subject that spans many \
+slides (for example "B+Tree" or "Hashing"), and a sub-topic is one part of it; give a main topic no \
+sub-topics when it is too small to split, and never just one. Each line must be a SHORT LABEL ONLY - one \
+to five words, like a chapter title - never a full sentence or a description of what will be covered. Do \
+not explain or summarize content yet - this is just the list of titles you will cover in detail on the \
+following turns."""
 
 OUTLINE_PROMPT = """Before writing anything, plan out how the deck's content will be divided across the \
 topics in your table of contents above. For each topic, write one short line noting which specific \
@@ -92,8 +239,8 @@ keep each line to a short phrase, not a full explanation."""
 
 SECTION_PROMPT = """Now write complete, exam-ready, detailed explanations in Hebrew for the following \
 {n} topics from your table of contents, covering them one after another in order. Start each topic with \
-its own heading on its own line, EXACTLY in this format (including the "###" and the period after the \
-number): "### {{index}}. {{title}}"
+the heading given for it below, on its own line, EXACTLY as written (including the "#" marks and the \
+number). Any further heading inside a topic starts with "#####".
 
 Topics to cover in this batch:
 {topic_list}
@@ -102,11 +249,21 @@ For each topic, cover every slide's substantive content in full - definitions, a
 formulas, mechanisms, and concrete examples. Follow the content-boundary plan you laid out earlier: cover \
 only the material that belongs to these topics, and do not repeat - even partially or reworded - any \
 definition, formula, or example that belongs to a different topic in your table of contents, whether \
-you've already written it or will write it in a later batch. If two topics are closely related, mention \
-the connection in one short sentence rather than re-explaining the shared material. A standalone formula \
+you've already written it or will write it in a later batch. Do not write sentences about how topics \
+relate to each other. {length_rule} Where a slide holds an important technical \
+figure that the text can't replace (a diagram, chart, table, or worked-example slide - never a logo, \
+photo, meme, or decorative image), put a line reading exactly "@@IMG@@ <deck> <page>" where it belongs, \
+with nothing else on that line: <deck> is the attached PDF's position in the order they were attached \
+(1 if there is only one) and <page> is the page number inside that PDF, counting its first page as 1. \
+Add one for every slide whose diagram, chart, or table carries real content, with no per-topic limit - \
+a topic that groups several such slides gets several. When a passage gives several parallel items \
+(benchmarks with their scores, steps, variants, pros and cons), write them as a bullet list, not one long \
+paragraph, and keep each paragraph to about 4 lines. A standalone formula \
 goes on its own line starting with "@@F@@ " followed by real LaTeX (e.g. \
 "@@F@@ P(w \\mid s) = \\frac{{P(s \\mid w)\\,P(w)}}{{P(s)}}") and nothing else on that line - it gets \
-rendered as actual typeset math. A short expression embedded mid-sentence instead stays plain typeable \
+rendered as actual typeset math. Right after every such formula, explain every parameter/variable/symbol \
+in it, with none left out - a "כאשר:" lead-in then one bullet per symbol, opening with the bolded symbol \
+as plain text and then its meaning. A short expression embedded mid-sentence instead stays plain typeable \
 text (no LaTeX there). Do not describe the visual appearance of illustrative images or decorative diagrams \
 in detail. Bold \
 "**Term**: explanation" labels (never the explanation itself), list-introducing headline sentences ending \
@@ -152,10 +309,17 @@ question that is not in the attached exams, and do not stretch an unrelated ques
 Do not add a title heading - the surrounding document already provides one."""
 
 GLOSSARY_PROMPT = """Now produce the closing key-concepts glossary in Hebrew for this entire unit: a \
-bullet list of every bolded key concept you introduced across all the topics above, in the order they \
-first appeared. Keep concept names themselves in their original English form, same as in the body text. \
+bullet list of the genuine technical terms and concepts this unit defines (models, algorithms, methods, \
+metrics, named phenomena), in the order they first appeared - at most about 25. Do NOT include the bolded \
+lead phrases of ordinary bullets (e.g. "היתרון המרכזי") or descriptive phrases; only terms a student would \
+look up. Keep concept names themselves in their original English form, same as in the body text. \
 Format each line exactly as:
 
 - **Term** - הגדרה קצרה וברורה בעברית, במשפט או שניים.
 
 Do not include anything except this bullet list."""
+
+# A later part's glossary skips the terms the earlier parts already defined,
+# including under another spelling ("Helot" / "Helots").
+GLOSSARY_COVERED_RULE = ("\n\nAn earlier part of this unit's glossary already defines these terms - leave them "
+                         "out, including under another spelling, transliteration or singular/plural form:\n{terms}")

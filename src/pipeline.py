@@ -11,21 +11,30 @@ exhaustive coverage without needing several manual chat sessions.
 """
 from __future__ import annotations
 
-import hashlib
 import json
+import math
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from . import claude_client, pdf_utils, prompts
-from .config import CourseConfig, Unit
+from .log import log, set_unit
+from .config import CourseConfig, Unit, fingerprint
 from .course_context import build_course_context
 
 # How many agenda topics go into one Claude call. Batching cuts wall-clock
 # time and API call count roughly by this factor versus one call per topic,
 # at the cost of a larger per-call output budget.
 SECTION_BATCH_SIZE = 4
+# A slide deck part gets at most one agenda topic per this many slides.
+SLIDES_PER_TOPIC = 3
+# A slide-less (transcript-only) lecture gets one topic per this many words.
+WORDS_PER_TOPIC = 1500
 SECTION_MAX_OUTPUT_TOKENS = 24000
+# Units summarized at the same time. Rate-limit errors (429) are retried by
+# the SDK; lower this if they keep failing a run.
+UNIT_WORKERS = 4
 
 # Each source PDF is cut into this many page ranges, and each range gets its
 # own chat, so every call covers less material and a small model like
@@ -35,33 +44,89 @@ SECTION_MAX_OUTPUT_TOKENS = 24000
 PARTS_PER_FILE = 2
 
 
-def _parse_agenda(agenda_text: str) -> List[str]:
-    titles = []
+# Sub-topic title for a later part's text on a main topic an earlier part began.
+CONTINUED_TITLE = "המשך"
+# "1. B+Tree" (main topic) or "1.1 מקרה פשוט" (sub-topic), maybe after a "-" bullet.
+_AGENDA_LINE_RE = re.compile(r"^(?:[-*]\s*)?(\d+)(\.\d+)?[\.\)]?\s+(.*)$")
+
+
+def _parse_agenda(agenda_text: str) -> List[Tuple[str, List[str]]]:
+    """(main topic, its sub-topics) pairs, in order. An unnumbered line is a main topic."""
+    mains = []
     for line in agenda_text.splitlines():
         line = line.strip()
         if not line:
             continue
-        # strip leading list markers like "1.", "1)", "-", "*"
-        cleaned = re.sub(r"^(\d+[\.\)]|[-*])\s*", "", line).strip()
-        cleaned = re.sub(r"\*+", "", cleaned).strip()
-        if cleaned:
-            titles.append(cleaned)
-    return titles if len(titles) >= 2 else ["Full deck"]
+        m = _AGENDA_LINE_RE.match(line)
+        title = re.sub(r"\*+", "", m.group(3) if m else re.sub(r"^[-*]\s*", "", line)).strip()
+        if not title:
+            continue
+        if m and m.group(2) and mains:
+            mains[-1][1].append(title)
+        else:
+            mains.append((title, []))
+    leaves = sum(len(subs) or 1 for _, subs in mains)
+    return mains if leaves >= 2 else [("Full deck", [])]
+
+
+def _number_outline(mains: List[Tuple[str, List[str]]], outline: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """(number, title) rows for `mains` - "3" for a main topic, "3.2" for a
+    sub-topic - numbered on from the unit's earlier parts' `outline`. A first
+    main topic named like the last one before continues it: its sub-topics
+    keep counting under the same number (one "continued" sub-topic if it has
+    none)."""
+    last = next(((n, t) for n, t in reversed(outline) if "." not in n), None)
+    main_no = int(last[0]) if last else 0
+    rows = []
+    for i, (title, subs) in enumerate(mains):
+        if i == 0 and last and title == last[1]:
+            sub_no = sum(1 for n, _ in outline if n.startswith(f"{main_no}."))
+            subs = subs or [CONTINUED_TITLE]
+        else:
+            main_no, sub_no = main_no + 1, 0
+            rows.append((str(main_no), title))
+        for sub in subs:
+            sub_no += 1
+            rows.append((f"{main_no}.{sub_no}", sub))
+    return rows
+
+
+def _written_topics(rows: List[Tuple[str, str]]) -> List[Tuple[str, str, List[str]]]:
+    """(number, title, heading lines) for every topic that gets its own text:
+    each sub-topic, and each main topic without any. A main topic's own "###"
+    heading goes right before its first sub-topic's "####" one."""
+    topics, pending = [], []
+    for i, (n, t) in enumerate(rows):
+        if "." in n:
+            topics.append((n, t, pending + [f"#### {n} {t}"]))
+            pending = []
+        elif i + 1 < len(rows) and rows[i + 1][0].startswith(n + "."):
+            pending = [f"### {n}. {t}"]
+        else:
+            topics.append((n, t, [f"### {n}. {t}"]))
+    return topics
+
+
+def _fix_headings(body: str, topics: List[Tuple[str, str, List[str]]]) -> str:
+    """Replaces the heading the model wrote for each topic with its exact
+    heading lines, so the numbering is right and main topics get theirs."""
+    for n, _, lines in topics:
+        body = re.sub(rf"^#+[ \t]*{re.escape(n)}[\.\)]?[ \t].*$", lambda _: "\n".join(lines), body,
+                      count=1, flags=re.M)
+    return body
+
+
+def _outline_text(rows: List[Tuple[str, str]]) -> str:
+    return "\n".join(f"{n} {t}" if "." in n else f"{n}. {t}" for n, t in rows)
 
 
 def _unit_cache_path(course: CourseConfig, unit: Unit) -> Path:
     return course.output_dir / "cache" / f"unit_{unit.cache_key(course)}.json"
 
 
-def _exam_fingerprint(course: CourseConfig) -> str:
-    """Identity of the past-exam material + the prompt that consumes it, so
-    swapping in a new exam paper regenerates the practice pages."""
-    h = hashlib.sha256()
-    h.update(prompts.EXAM_PROMPT_VERSION.encode("utf-8"))
-    for p in course.exam_paths():
-        h.update(p.name.encode("utf-8"))
-        h.update(str(p.stat().st_mtime_ns).encode("utf-8"))
-    return h.hexdigest()[:12]
+def _part_cache_path(course: CourseConfig, unit: Unit, k: int, n: int) -> Path:
+    """One part's result, so a failed run only redoes the part it failed in."""
+    return course.output_dir / "cache" / f"part_{unit.cache_key(course)}_{k}of{n}.json"
 
 
 def _exam_cache_path(course: CourseConfig, unit: Unit, exam_fp: str) -> Path:
@@ -84,14 +149,12 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
     cache_path = _exam_cache_path(course, unit, exam_fp)
     if use_cache and cache_path.exists():
         cached = json.loads(cache_path.read_text(encoding="utf-8"))["markdown"]
-        print(f"  Using cached exam question for '{unit.name}'")
+        log(f"  Using cached exam question for '{unit.name}'")
         return cached or None
 
-    print(f"  Looking for a past-exam question on '{unit.name}'...")
-    system_instruction = prompts.SYSTEM_INSTRUCTION.format(course_name=course.course_name)
-    chat = claude_client.start_chat(
-        client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
-    )
+    log(f"  Looking for a past-exam question on '{unit.name}'...")
+    system_instruction = _system_instruction(course)
+    chat = claude_client.Chat(client, course.model, system_instruction, SECTION_MAX_OUTPUT_TOKENS)
     prompt = prompts.EXAM_PROMPT.format(
         unit_name=unit.name,
         unit_summary=unit_markdown,
@@ -100,7 +163,7 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
     answer = claude_client.send(chat, [prompt, *exam_files]).strip()
 
     if prompts.EXAM_NO_QUESTION_MARKER in answer:
-        print(f"  No past-exam question matches '{unit.name}' - skipping its practice page")
+        log(f"  No past-exam question matches '{unit.name}' - skipping its practice page")
         block = ""
     else:
         block = "## שאלה ממבחנים קודמים\n\n" + answer
@@ -110,10 +173,30 @@ def generate_exam_block(client, course: CourseConfig, unit: Unit, unit_markdown:
     return block or None
 
 
+def _system_instruction(course: CourseConfig, unit: Optional[Unit] = None) -> str:
+    """`unit` adds its transcript note; the exam call leaves it out, as it sends no transcript."""
+    extra = prompts.BOOK_NOTE if course.book else ""
+    if course.focus:
+        extra += prompts.FOCUS_NOTE.format(focus=course.focus)
+    if unit and unit.transcript_files:
+        extra += prompts.TRANSCRIPT_NOTE if unit.lecture_files else prompts.TRANSCRIPT_ONLY_NOTE
+        if unit.lecture_files and unit.other_decks:
+            other = "\n\n".join(pdf_utils.extract_text(course.lectures_dir / f) for f in unit.other_decks)
+            extra += prompts.TRANSCRIPT_SHARED_NOTE.format(other=other[:LATER_SLIDES_MAX_CHARS].strip())
+    if course.instructions:
+        extra += prompts.INSTRUCTIONS_NOTE.format(instructions=course.instructions)
+    return prompts.SYSTEM_INSTRUCTION.format(course_name=course.course_name, extra=extra)
+
+
 def _group_parts(per_file: List[List[Path]]) -> List[List[Path]]:
     """[[a1, a2], [b1]] -> [[a1, b1], [a2]]: part k holds each file's k-th chunk."""
     n_parts = max((len(chunks) for chunks in per_file), default=0)
     return [[chunks[k] for chunks in per_file if k < len(chunks)] for k in range(n_parts)]
+
+
+_GLOSSARY_TERM_RE = re.compile(r"^\s*[-*]\s*\*\*(.+?)\*\*", re.M)
+# Cap on the later slides' text an earlier transcript part is shown.
+LATER_SLIDES_MAX_CHARS = 6000
 
 
 def _merge_glossaries(glossaries: List[str]) -> str:
@@ -121,8 +204,9 @@ def _merge_glossaries(glossaries: List[str]) -> str:
     that shows up in more than one part."""
     seen, lines = set(), []
     for line in "\n".join(glossaries).splitlines():
-        match = re.match(r"\s*[-*]\s*\*\*(.+?)\*\*", line)
-        term = match.group(1).strip().lower() if match else None
+        match = _GLOSSARY_TERM_RE.match(line)
+        # "Stasis (מרידה פנימית)" is the same term as "Stasis".
+        term = match.group(1).split("(")[0].strip().lower() if match else None
         if term in seen:
             continue
         if term:
@@ -131,76 +215,161 @@ def _merge_glossaries(glossaries: List[str]) -> str:
     return "\n".join(lines)
 
 
+# [ \t], not \s: \s* would match the newline too and glue two marker lines into one.
+_IMG_MARKER_RE = re.compile(r"^[ \t]*@@IMG@@[ \t]*(\d+)[ \t]+(\d+)[ \t]*$", re.M)
+
+
+def _resolve_images(body: str, part_paths: List[Path], img_dir: Path) -> str:
+    """Turns each "@@IMG@@ <deck> <page>" the model wrote into
+    "@@IMG@@ <image path>", extracting that page's figure from the chunk PDF
+    the model actually saw. Markers with no usable image are dropped."""
+    def resolve(m: re.Match) -> str:
+        deck, page = int(m.group(1)), int(m.group(2))
+        if not 1 <= deck <= len(part_paths):
+            return ""
+        img = pdf_utils.extract_main_image(part_paths[deck - 1], page, img_dir)
+        return f"@@IMG@@ {img.resolve()}" if img else ""
+    return _IMG_MARKER_RE.sub(resolve, body)
+
+
 def _summarize_part(client, course: CourseConfig, system_instruction: str, digest: str, label: str,
-                    uploaded_files: List, first_index: int):
+                    uploaded_files: List, outline: List[Tuple[str, str]], part_paths: List[Path],
+                    transcript_words: int = 0, covered_titles: List[str] = (), later_slides: str = "",
+                    covered_terms: List[str] = ()):
     """One chat over one part of a unit: agenda -> outline -> sections ->
-    glossary. Topic numbers start at `first_index` so they keep counting
-    across parts. Returns (topic titles, section bodies, glossary)."""
-    chat = claude_client.start_chat(
-        client, course.model, system_instruction, max_output_tokens=SECTION_MAX_OUTPUT_TOKENS
-    )
+    glossary. `outline` is the unit's earlier parts' numbered topics, so the
+    numbers keep counting across parts. `part_paths` are the local chunk PDFs behind
+    `uploaded_files`, used to pull out the slide images the model points at.
+    `transcript_words` > 0 means a lecture transcript is attached too; with
+    no `part_paths` it is the only source. `covered_titles` are the topics of
+    the unit's earlier parts, and `later_slides` the text of its later parts'
+    slides: a transcript part leaves both alone. `covered_terms` are the
+    earlier parts' glossary terms. Returns ((number, title) topic rows,
+    section bodies, glossary)."""
+    chat = claude_client.Chat(client, course.model, system_instruction, SECTION_MAX_OUTPUT_TOKENS)
 
     agenda_prompt = prompts.AGENDA_PROMPT.format(digest=digest, unit_name=label)
-    section_titles = _parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files]))
-    print(f"  Agenda: {len(section_titles)} section(s)")
+    if course.book:
+        agenda_prompt += prompts.BOOK_AGENDA_RULE
+        if course.focus:
+            agenda_prompt += prompts.FOCUS_AGENDA_RULE
+    elif not part_paths:
+        max_topics = max(3, math.ceil(transcript_words / WORDS_PER_TOPIC))
+        agenda_prompt += prompts.TRANSCRIPT_ONLY_AGENDA_RULE.format(max_topics=max_topics)
+    else:
+        pages = sum(pdf_utils.page_count(p) for p in part_paths)
+        agenda_prompt += prompts.SLIDE_AGENDA_RULE.format(max_topics=max(3, math.ceil(pages / SLIDES_PER_TOPIC)))
+        if transcript_words:
+            agenda_prompt += prompts.TRANSCRIPT_AGENDA_RULE
+            if covered_titles:
+                agenda_prompt += prompts.TRANSCRIPT_COVERED_RULE.format(
+                    covered="\n".join(f"- {t}" for t in covered_titles))
+            if later_slides:
+                agenda_prompt += prompts.TRANSCRIPT_LATER_RULE.format(later=later_slides)
+    open_main = next((t for n, t in reversed(outline) if "." not in n), None)
+    if open_main:
+        agenda_prompt += prompts.OPEN_MAIN_RULE.format(title=open_main)
+    rows = _number_outline(_parse_agenda(claude_client.send(chat, [agenda_prompt, *uploaded_files])), outline)
+    topics = _written_topics(rows)
+    log(f"  Agenda: {len(topics)} section(s)")
 
-    print("  Planning content boundaries...")
-    claude_client.send(chat, [prompts.OUTLINE_PROMPT])
+    # A book's few broad topics are written in one call, so there are no
+    # batches to keep apart and the boundary-planning call is skipped.
+    batch_size = len(topics) if course.book else SECTION_BATCH_SIZE
+    if not course.book:
+        log("  Planning content boundaries...")
+        claude_client.send(chat, [prompts.OUTLINE_PROMPT])
 
-    numbered_titles = list(enumerate(section_titles, start=first_index))
-    last_index = numbered_titles[-1][0]
+    if course.book:
+        length_rule = prompts.BOOK_LENGTH_RULE
+    elif transcript_words:
+        length_rule = prompts.TRANSCRIPT_LENGTH_RULE if part_paths else prompts.TRANSCRIPT_ONLY_LENGTH_RULE
+    else:
+        length_rule = prompts.SLIDE_LENGTH_RULE
+    # A continued main topic's title is in the earlier parts' outline.
+    main_titles = {n: t for n, t in [*outline, *rows] if "." not in n}
     section_bodies = []
-    for batch_start in range(0, len(numbered_titles), SECTION_BATCH_SIZE):
-        batch = numbered_titles[batch_start:batch_start + SECTION_BATCH_SIZE]
-        first_i, last_i = batch[0][0], batch[-1][0]
-        print(f"  Writing topics {first_i}-{last_i}/{last_index}: "
-              f"{', '.join(t for _, t in batch)}")
-        topic_list = "\n".join(f"- Topic {i}: {t}" for i, t in batch)
-        body = claude_client.send(chat, [prompts.SECTION_PROMPT.format(n=len(batch), topic_list=topic_list)])
-        section_bodies.append(body)
+    for batch_start in range(0, len(topics), batch_size):
+        batch = topics[batch_start:batch_start + batch_size]
+        log(f"  Writing topics {batch[0][0]}-{batch[-1][0]}/{topics[-1][0]}: "
+              f"{', '.join(t for _, t, _ in batch)}")
+        topic_list = "\n".join(
+            f'- "{lines[-1]}"' + (f' (part of main topic "{main_titles[n.split(".")[0]]}")' if "." in n else "")
+            for n, _, lines in batch)
+        body = claude_client.send(chat, [prompts.SECTION_PROMPT.format(
+            n=len(batch), topic_list=topic_list, length_rule=length_rule)])
+        body = _fix_headings(body, batch)
+        section_bodies.append(_resolve_images(body, part_paths, course.output_dir / "cache" / "images"))
 
-    print("  Writing glossary...")
-    glossary_text = claude_client.send(chat, [prompts.GLOSSARY_PROMPT])
-    return section_titles, section_bodies, glossary_text
+    log("  Writing glossary...")
+    glossary_prompt = prompts.GLOSSARY_PROMPT
+    if covered_terms:
+        glossary_prompt += prompts.GLOSSARY_COVERED_RULE.format(terms=", ".join(covered_terms))
+    glossary_text = claude_client.send(chat, [glossary_prompt])
+    return rows, section_bodies, glossary_text
 
 
 def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cache: bool = True) -> str:
     """Returns the assembled Markdown for one unit (agenda + sections + glossary)."""
     cache_path = _unit_cache_path(course, unit)
     if use_cache and cache_path.exists():
-        print(f"[pipeline] Using cached result for unit '{unit.name}'")
+        log(f"[pipeline] Using cached result for unit '{unit.name}'")
         return json.loads(cache_path.read_text(encoding="utf-8"))["markdown"]
 
-    print(f"[pipeline] Processing unit '{unit.name}'")
+    log(f"[pipeline] Processing unit '{unit.name}'")
     source_paths = [p for p in unit.source_paths(course) if p.exists()]
     missing = [p for p in unit.source_paths(course) if not p.exists()]
     for m in missing:
-        print(f"  [warn] configured file not found, skipping: {m}")
-    if not source_paths:
+        log(f"  [warn] configured file not found, skipping: {m}")
+    transcripts = unit.transcript_paths(course)
+    if not source_paths and not transcripts:
         raise FileNotFoundError(f"No source PDFs found for unit '{unit.name}'")
 
     chunk_dir = course.output_dir / "cache" / "chunks"
-    per_file = [pdf_utils.split_pdf(p, PARTS_PER_FILE, chunk_dir) for p in source_paths]
-    # Part k = the k-th page range of every source file.
-    parts = _group_parts(per_file)
+    per_file = [pdf_utils.split_pdf(p, 1 if course.book else PARTS_PER_FILE, chunk_dir) for p in source_paths]
+    # Part k = the k-th page range of every source file. A transcript-only
+    # lecture is one part with no PDFs.
+    parts = _group_parts(per_file) or [[]]
+    # The whole transcript goes with every part: it has no timestamps to cut
+    # it at the slides' page ranges, so the prompt picks the matching passages.
+    transcript_docs = [claude_client.text_document(t) for t in transcripts]
+    transcript_words = sum(len(d["source"]["data"].split()) for d in transcript_docs)
 
-    system_instruction = prompts.SYSTEM_INSTRUCTION.format(course_name=course.course_name)
-    all_titles, section_bodies, glossaries = [], [], []
+    system_instruction = _system_instruction(course, unit)
+    outline, section_bodies, glossaries = [], [], []
     for k, part in enumerate(parts, start=1):
         label = unit.name if len(parts) == 1 else f"{unit.name} (part {k}/{len(parts)})"
-        print(f"  Part {k}/{len(parts)}: uploading {', '.join(p.name for p in part)} to Claude...")
-        uploaded_files = [claude_client.upload_pdf(client, p) for p in part]
-        titles, bodies, glossary = _summarize_part(
-            client, course, system_instruction, digest, label, uploaded_files, first_index=len(all_titles) + 1
-        )
-        all_titles += titles
+        part_cache = _part_cache_path(course, unit, k, len(parts))
+        if use_cache and part_cache.exists():
+            log(f"  Part {k}/{len(parts)}: using cached result")
+            rows, bodies, glossary = json.loads(part_cache.read_text(encoding="utf-8"))
+            rows = [tuple(r) if isinstance(r, list) else r for r in rows]
+            if rows and isinstance(rows[0], str):  # cached before topics had sub-topics
+                rows = _number_outline([(t, []) for t in rows], outline)
+        else:
+            names = [p.name for p in part + transcripts]
+            log(f"  Part {k}/{len(parts)}: uploading {', '.join(names)} to Claude...")
+            uploaded_files = [claude_client.pdf_document(p) for p in part]
+            later_slides = ""
+            if transcript_docs:
+                uploaded_files += transcript_docs
+                later_slides = "\n\n".join(
+                    pdf_utils.extract_text(p) for later in parts[k:] for p in later)[:LATER_SLIDES_MAX_CHARS]
+            rows, bodies, glossary = _summarize_part(
+                client, course, system_instruction, digest, label, uploaded_files,
+                outline=outline, part_paths=part, transcript_words=transcript_words,
+                covered_titles=[t for _, t, _ in _written_topics(outline)], later_slides=later_slides.strip(),
+                covered_terms=_GLOSSARY_TERM_RE.findall("\n".join(glossaries)),
+            )
+            part_cache.parent.mkdir(parents=True, exist_ok=True)
+            part_cache.write_text(json.dumps([rows, bodies, glossary], ensure_ascii=False), encoding="utf-8")
+        outline += rows
         section_bodies += bodies
         glossaries.append(glossary)
 
-    agenda_text = "\n".join(f"{i}. {t}" for i, t in enumerate(all_titles, start=1))
     markdown = "\n\n".join([
         f"# {unit.name}",
-        "## סדר יום\n\n" + agenda_text,
+        "## נושאים:\n\n" + _outline_text(outline),
         *section_bodies,
         "## מושגי מפתח\n\n" + _merge_glossaries(glossaries),
     ])
@@ -211,40 +380,52 @@ def process_unit(client, course: CourseConfig, unit: Unit, digest: str, use_cach
     return markdown
 
 
-def run(course: CourseConfig, use_cache: bool = True, force_context: bool = False,
-        with_tests: bool = False) -> List[str]:
+def run(course: CourseConfig, use_cache: bool = True, with_tests: bool = False,
+        rebuild: frozenset = frozenset()) -> List[str]:
     """Runs every unit and returns a list of top-level Markdown sections
     (cover page first, then one per unit) - kept separate so the PDF builder
     can insert a page break between each one.
 
     With `with_tests`, each unit also gets a past-exam practice question
-    appended, provided the course has an exams folder to draw from."""
+    appended, provided the course has an exams folder to draw from. Units
+    numbered in `rebuild` (1-based, as in the log) skip the cache."""
     client = claude_client.make_client()
-    digest = build_course_context(course, force=force_context)
+    # A book's chapters are too long to resend as a digest on every call.
+    digest = "" if course.book else build_course_context(course)
 
     exam_files, exam_fp = [], ""
     if with_tests:
         exam_paths = course.exam_paths()
         if not exam_paths:
-            print("[pipeline] --with-tests was passed but no past-exam PDFs were found "
+            log("[pipeline] --with-tests was passed but no past-exam PDFs were found "
                   f"({course.exams_dir or 'no exams folder'}) - continuing without exam pages.")
         else:
-            exam_fp = _exam_fingerprint(course)
-            print(f"[pipeline] Uploading {len(exam_paths)} past-exam PDF(s) from {course.exams_dir.name}...")
+            exam_fp = fingerprint(exam_paths, prompts.EXAM_PROMPT_VERSION)[:12]
+            log(f"[pipeline] Uploading {len(exam_paths)} past-exam PDF(s) from {course.exams_dir.name}...")
             for p in exam_paths:
-                print(f"  Uploading {p.name}...")
-                exam_files.append(claude_client.upload_pdf(client, p))
+                log(f"  Uploading {p.name}...")
+                exam_files.append(claude_client.pdf_document(p))
 
-    unit_markdowns = []
-    for unit in course.units:
-        markdown = process_unit(client, course, unit, digest, use_cache=use_cache)
+    def one_unit(n: int, unit: Unit) -> str:
+        set_unit(n)
+        cached = use_cache and n not in rebuild
+        markdown = process_unit(client, course, unit, digest, use_cache=cached)
         if exam_files:
             exam_block = generate_exam_block(
-                client, course, unit, markdown, exam_files, exam_fp, use_cache=use_cache
+                client, course, unit, markdown, exam_files, exam_fp, use_cache=cached
             )
             if exam_block:
                 markdown = markdown + "\n\n" + exam_block
-        unit_markdowns.append(markdown)
+        return markdown
+
+    # Units don't depend on each other, and nearly all the time is spent
+    # waiting on Claude, so several run at once. A failed unit stops the
+    # ones not started yet; the ones running finish and get cached.
+    pool = ThreadPoolExecutor(max_workers=UNIT_WORKERS)
+    try:
+        unit_markdowns = list(pool.map(one_unit, range(1, len(course.units) + 1), course.units))
+    finally:
+        pool.shutdown(cancel_futures=True)
 
     cover = f"# {course.course_name}\n## סיכום קורס\n\n" + "## תוכן עניינים\n\n" + "\n".join(
         f"@@TOC@@ {i}|{u.name}" for i, u in enumerate(course.units, start=1)
