@@ -7,3 +7,10 @@ API_KEY.txt
 
 # Duplicate copies left by cloud sync (e.g. ".env (1)")
 * (1)*
+
+# Local IDE settings: deployment.xml holds SSH users/hosts, misc.xml the local interpreter
+.idea/deployment.xml
+.idea/misc.xml
+.idea/workspace.xml
+.idea/sshConfigs.xml
+.idea/webServers.xml

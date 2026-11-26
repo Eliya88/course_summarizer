@@ -32,15 +32,18 @@ from app import (ACCENT, BG, BORDER, CARD, FONT, GREEN, MUTED, RED, SETTINGS, TE
                  _save_settings)
 from src.config import _TRANSCRIPT_DIR_NAMES, _natural_key
 
-HOST = "bgu-login"  # ~/.ssh/config alias for slurm.bgu.ac.il, with the cluster key
+HOST = "bgu-login"  # ~/.ssh/config alias for the cluster's login node, with its key
 # Fail instead of waiting on a password prompt nobody sees, or on a VPN that's down.
-SSH = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
+SSH = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
+       # and drop a link that went dead mid-transfer within a minute, so the retry below takes over
+       "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
 PARALLEL = 3  # lectures in flight at once; each holds one GPU job while it runs
 POLL = 30  # seconds between checks on a running job
 RETRY, GIVE_UP = 30, 30 * 60  # seconds between tries while the connection is down, and how long to keep trying
 WARN_EVERY = 3 * 60  # seconds between "connection lost" popups
 # How far a lecture got on the cluster, as its first line: done | failed (then the
 # log's end) | running (then submit.sh's last line, then the GPU and progress once the job has started) |
+# stale (submit.sh died with no exit code: no job after 10 min, or its job ended 10 min ago; then the log's end) |
 # uploaded | partial <bytes uploaded>.
 # The job writes its .srt/.txt as it goes, so only submit.sh's exit code says they're whole.
 STATE = """cd ~/transcription; s={0}
@@ -51,6 +54,9 @@ if [ -f logs/$s.rc ]; then
     echo done; echo "$gpu"  # the GPU, then the job's run time
     echo "$(sacct -j "$j" -X -n -o Elapsed 2>/dev/null | xargs)"
   else echo failed; tail -n 5 logs/$s.submit; fi
+elif [ -f logs/$s.submit ] && find logs/$s.submit -mmin +10 | grep -q . && {{ [ -z "$j" ] ||
+     sacct -j "$j" -X -n -o State 2>/dev/null | grep -qE 'COMPLETED|FAILED|CANCELLED|TIMEOUT|OUT_OF_ME|NODE_FAIL|PREEMPTED|BOOT_FAIL|DEADLINE'; }}
+then echo stale; tail -n 5 logs/$s.submit
 elif [ -f logs/$s.submit ]; then echo running; tail -n 1 logs/$s.submit; echo "$gpu"
   # The audio's length in minutes, then how far the job got, as hh:mm:ss.
   grep -o 'audio duration: [0-9.]*' logs/whisper_he_$j.out 2>/dev/null | cut -d' ' -f3
@@ -93,6 +99,22 @@ def transcripts_dir(video: Path) -> Path:
         return found
     (d := video.parent / "Transcripts").mkdir(exist_ok=True)
     return d
+
+
+def remote_stem(video: Path) -> str:
+    """The lecture's name on the cluster: named after the video (path and size), so a later run finds it there.
+    Shell-safe ASCII, so a name like "lecture 4.1" or a Hebrew one works in the cluster commands."""
+    tag = hashlib.sha1(f"{video.resolve()}|{video.stat().st_size}".encode()).hexdigest()[:10]
+    return f"{re.sub(r'[^A-Za-z0-9._-]', '_', video.stem)}_{tag}"
+
+
+def progress(minutes: str, at: str) -> float:
+    """How far the job got: `at` (the log's last timestamp, hh:mm:ss or mm:ss) over the audio's `minutes`.
+    0 for anything it can't read, so an odd log line never fails a running lecture."""
+    try:
+        return sum(float(x) * 60 ** k for k, x in enumerate(reversed(at.split(":")))) / 60 / float(minutes)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
 
 
 class TranscriberPage(Page):
@@ -196,45 +218,62 @@ class TranscriberPage(Page):
             if not mp3.exists():
                 self._step(i, "Converting to mp3")
                 part = mp3.with_name(mp3.stem + ".part.mp3")  # a stopped run leaves no half mp3 behind
-                self._run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(video),
-                           "-vn", "-ac", "1", "-b:a", "64k", str(part)])
-                part.replace(mp3)
-            # Named after the video (path and size), so a later run finds this lecture on the cluster.
-            # Shell-safe, so a name like "lecture 4.1" works in the cluster commands.
-            stem = f"{re.sub(r'[^A-Za-z0-9._-]', '_', video.stem)}_{hashlib.sha1(f'{video.resolve()}|{video.stat().st_size}'.encode()).hexdigest()[:10]}"
+                try:
+                    self._run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(video),
+                               "-vn", "-ac", "1", "-b:a", "64k", str(part)])
+                    part.replace(mp3)
+                finally:
+                    part.unlink(missing_ok=True)
+            stem = remote_stem(video)
             state, detail = self._state(i, stem)
             if state.startswith("partial"):
                 self._step(i, "Uploading")
                 have, size = int(state.split()[1]), mp3.stat().st_size
-                if have < size:  # sftp's reput carries on a half-uploaded file
-                    batch = f"{'reput' if have else 'put'} \"{mp3.name}\" audio/{stem}.mp3.part\n"
-                    self._remote(i, ["sftp", *SSH, "-b", "-", HOST], batch, cwd=mp3.parent)
+                if have != size:
+                    # From an ASCII-named copy: sftp's batch parsing and globbing never see the real name
+                    # (Hebrew, spaces, "&", "[ ]"). reput carries on a half-uploaded file; put starts over.
+                    with tempfile.TemporaryDirectory() as tmp:
+                        shutil.copyfile(mp3, Path(tmp, stem + ".mp3"))
+                        batch = f"-mkdir audio\n{'reput' if 0 < have < size else 'put'} {stem}.mp3 audio/{stem}.mp3.part\n"
+                        self._remote(i, ["sftp", *SSH, "-b", "-", HOST], batch, cwd=Path(tmp))
+                    state, detail = self._state(i, stem)
+                    if state.startswith("partial") and (have := int(state.split()[1])) != size:
+                        # START would make a short file the lecture's audio
+                        raise RuntimeError(f"Upload incomplete: {have} of {size} bytes reached the cluster. "
+                                           "Press Run to resume.")
             started = False
             while state != "done":
-                if state == "failed" and started:
-                    raise RuntimeError(detail or "The job failed. See ~/transcription/logs/ on the cluster.")
-                if state != "running":  # not started yet, or failed on an earlier run
+                if started and state != "running":
+                    if state == "failed":
+                        raise RuntimeError(detail or "The job failed. See ~/transcription/logs/ on the cluster.")
+                    raise RuntimeError("submit.sh stopped without an exit code:\n" + detail if state == "stale"
+                                       else f"The job didn't start (the cluster says: {state}).")
+                if state != "running":  # not started yet, or failed or died on an earlier run
                     self._remote(i, ["ssh", *SSH, HOST, START.format(stem)])
                     started = True
+                    state, detail = self._state(i, stem)  # not the old run's log as this one's progress
+                    continue
                 _, gpu, minutes, at = (detail.split("\n") + [""] * 3)[:4]
                 gpu = gpu.strip().replace("NVIDIA GeForce ", "")
                 step = ("Transcribing on the GPU" if "RUNNING" in detail else "Waiting for a GPU") \
                     + (f" ({gpu})" if gpu else "")
-                h, m, sec = (at.strip() or "0:0:0").split(":")
-                self._step(i, step, (int(h) * 60 + int(m) + int(sec) / 60) / float(minutes) if minutes else 0.0)
+                self._step(i, step, progress(minutes, at.strip()))
                 self._wait(POLL)
                 state, detail = self._state(i, stem)
             gpu, _, took = detail.partition("\n")
-            done = "  ·  ".join(["Done", *filter(None, (gpu.replace("NVIDIA GeForce ", ""),
-                                                        took.strip().removeprefix("00:")))])
+            done = ["Done", *filter(None, (gpu.replace("NVIDIA GeForce ", ""), took.strip().removeprefix("00:")))]
             self._step(i, "Downloading")
             with tempfile.TemporaryDirectory() as tmp:
-                self._remote(i, ["scp", *SSH, f"{HOST}:transcription/output/{stem}.*", tmp])
+                # The two whole files by name, never a glob that could catch a job's .part files.
+                self._remote(i, ["scp", *SSH, f"{HOST}:transcription/output/{stem}.srt",
+                                 f"{HOST}:transcription/output/{stem}.txt", tmp])
                 txt = transcripts_dir(video) / f"{video.stem}.txt"
-                if not txt.exists():  # keep a transcript that's already there (maybe from another tool)
+                if txt.exists():  # keep a transcript that's already there (maybe from another tool)
+                    done.append("kept the existing .txt")
+                else:
                     shutil.move(Path(tmp, stem + ".txt"), txt)
                 shutil.move(Path(tmp, stem + ".srt"), video.with_suffix(".srt"))  # last: marks the lecture done
-            self.events.put((i, done, 1.0))
+            self.events.put((i, "  ·  ".join(done), 1.0))
         except Stopped:
             self.events.put((i, "Stopped", None))
         except Exception as e:  # one lecture failing shouldn't stop the others
