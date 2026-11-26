@@ -4,6 +4,7 @@ Usage:
     python main.py --course-dir "../NLP"                  # auto-discover, no YAML needed
     python main.py --course-dir "../NLP" --no-cache
     python main.py --course-dir "../NLP" --rebuild 3     # make lecture 3 again, the rest from the cache
+    python main.py --course-dir "../NLP" --fresh-pdf     # don't carry the old PDF's highlights and notes over
     python main.py --course-dir "../NLP" --with-exercises # also summarize exercise/tutorial units
     python main.py --course-dir "../NLP" --with-tests     # add a past-exam practice page after each chapter
     python main.py --course courses/data_science.yaml     # or use a hand-written YAML config
@@ -36,6 +37,7 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 from src.config import (attach_transcripts, discover_book_config, discover_course_config, load_course_config,
                         parse_chapters)
+from src.keep_notes import carry_notes, count_notes
 from src.pdf_builder import build_pdf
 from src.pipeline import run
 
@@ -60,6 +62,7 @@ def main() -> None:
     parser.add_argument("--book", type=str, help="Path to a textbook PDF with chapter bookmarks - summarizes the --chapters given, shorter than a regular run")
     parser.add_argument("--chapters", type=str, help="With --book: chapter numbers, e.g. 1-5 or 1,3,5")
     parser.add_argument("--focus", type=str, help="With --book: an assignment PDF the summary should go deep on")
+    parser.add_argument("--fresh-pdf", action="store_true", help="Don't carry the highlights and notes made in the previous summary PDF into the new one")
     parser.add_argument("--instructions", type=str, help='Extra instructions for the model, e.g. "Explain unfamiliar words in a footnote"')
     parser.add_argument("--list-pdfs", type=str, metavar="DIR", help="List PDFs in DIR formatted for a course YAML, then exit")
     args = parser.parse_args()
@@ -115,6 +118,10 @@ def main() -> None:
     )
 
     output_path = course.output_dir / f"{course.course_name.replace(' ', '_')}_summary.pdf"
+    copy_to = course.root_dir / output_path.name if (args.course_dir or args.book) else None
+    # The copy the reader opens (next to the course) is where highlights get saved.
+    previous = _back_up_notes(copy_to or output_path, course.output_dir) if not args.fresh_pdf else None
+
     print("Building the PDF...")
     build_pdf(
         sections,
@@ -122,10 +129,40 @@ def main() -> None:
         course_name=course.course_name,
         chapter_titles=[u.name for u in course.units],
     )
+    if previous:
+        _carry_notes(previous, output_path)
     print(f"\nDone. Wrote: {output_path}")
-    if args.course_dir or args.book:
-        copy_path = shutil.copy2(output_path, course.root_dir)
-        print(f"Copied to: {copy_path}")
+    if copy_to:
+        try:
+            shutil.copy2(output_path, copy_to)
+        except PermissionError:
+            sys.exit(f"Couldn't replace {copy_to} - is it open in a PDF reader? "
+                     f"Close it and run again (the cache makes that quick), or copy the new PDF from {output_path}")
+        print(f"Copied to: {copy_to}")
+
+
+def _back_up_notes(pdf_path: Path, backup_dir: Path) -> Path | None:
+    """Saves a copy of the current summary if it has highlights or notes, to carry them over from."""
+    if not pdf_path.exists() or not (n := count_notes(pdf_path)):
+        return None
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / f"{pdf_path.stem}_previous.pdf"
+    shutil.copy2(pdf_path, backup)
+    print(f"  Your highlights and notes: {n} in {pdf_path.name}, saved a copy as {backup}")
+    return backup
+
+
+def _carry_notes(previous: Path, output_path: Path) -> None:
+    try:
+        result = carry_notes(previous, output_path)
+    except Exception as e:  # never lose the new PDF over this
+        print(f"  Couldn't carry your highlights over ({e}). They're still in {previous}")
+        return
+    print(f"  Carried {result.kept} highlights and notes into the new PDF.")
+    if result.lost_pages:
+        pages = ", ".join(map(str, sorted(set(result.lost_pages))))
+        print(f"  {len(result.lost_pages)} couldn't be placed - their text changed (old pages {pages}). "
+              f"They're still in {previous}")
 
 
 if __name__ == "__main__":

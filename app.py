@@ -343,6 +343,7 @@ class SummaryPage(Page):
         self.instructions = tk.StringVar()
         self.rebuild = tk.StringVar()
         self.flags = {flag: tk.BooleanVar() for _, _, flag in OPTIONS}
+        self.keep_notes = tk.BooleanVar(value=True)
 
         # Source card: a Course / Book switch and its fields.
         source = _card(self, "Source")
@@ -382,10 +383,13 @@ class SummaryPage(Page):
         grid = ttk.Frame(options)
         grid.pack(fill="x")
         grid.columnconfigure((0, 1), weight=1, uniform="opt")
-        for i, (text, hint, flag) in enumerate(OPTIONS):
+        checks = [(text, hint, self.flags[flag]) for text, hint, flag in OPTIONS]
+        checks.append(("Keep my highlights", "Carries highlights and notes saved in the current PDF into the new one",
+                       self.keep_notes))
+        for i, (text, hint, var) in enumerate(checks):
             cell = ttk.Frame(grid)
             cell.grid(row=i // 2, column=i % 2, sticky="w", pady=4)
-            ttk.Checkbutton(cell, text=text, variable=self.flags[flag]).pack(anchor="w")
+            ttk.Checkbutton(cell, text=text, variable=var).pack(anchor="w")
             ttk.Label(cell, text=hint, style="Muted.TLabel").pack(anchor="w", padx=(int(px * 11) + 10, 0))
         ttk.Label(options, text="EXTRA INSTRUCTIONS  ·  OPTIONAL", style="Field.TLabel").pack(anchor="w", pady=(10, 0))
         ttk.Entry(options, textvariable=self.instructions).pack(fill="x", pady=(2, 0))
@@ -457,6 +461,8 @@ class SummaryPage(Page):
             args += ["--instructions", self.instructions.get().strip()]
         if self.rebuild.get().strip():
             args += ["--rebuild", self.rebuild.get().strip()]
+        if not self.keep_notes.get():
+            args.append("--fresh-pdf")
         return args + [flag for flag, on in self.flags.items() if on.get()]
 
     def start(self) -> None:
