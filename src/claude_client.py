@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import base64
 import os
+import re
+import time
 from pathlib import Path
 from typing import List
 
 import anthropic
+import httpx2
 
 from .log import log
 
@@ -18,6 +21,9 @@ REQUEST_TIMEOUT_S = 10 * 60
 # The SDK retries connection errors, 408, 409, 429 and 5xx with backoff.
 # 400/401/403/404 and an empty credit balance (a 400) fail fast.
 MAX_RETRIES = 4
+# Retries for a connection dropped after the reply started streaming
+# (waits 5s, 15s, 45s).
+STREAM_RETRIES = 3
 
 # A reply that hits max_tokens stops mid-sentence. It stays in the chat
 # history, so asking the model to continue picks up right where it cut.
@@ -51,11 +57,19 @@ def pdf_document(pdf_path: Path) -> dict:
     }
 
 
+# Older cluster transcripts carry invisible bidi controls (U+202B etc.) and
+# subtitle-style "- " dashes at line starts; neither is content. Dropped on
+# reading, so the files (and the cache keys built from their mtimes) stay put.
+_BIDI_CONTROLS = re.compile("[\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+_LINE_DASH = re.compile(r"^[ \t]*-(?!\d)[ \t]*", re.M)  # not a negative number
+
+
 def text_document(path: Path) -> dict:
     """A .txt file (a lecture transcript) as a plain-text document block."""
+    text = _LINE_DASH.sub("", _BIDI_CONTROLS.sub("", path.read_text(encoding="utf-8-sig")))
     return {
         "type": "document",
-        "source": {"type": "text", "media_type": "text/plain", "data": path.read_text(encoding="utf-8-sig")},
+        "source": {"type": "text", "media_type": "text/plain", "data": text},
         "title": path.name,
     }
 
@@ -71,22 +85,37 @@ class Chat:
         texts = [{"type": "text", "text": p} for p in parts if isinstance(p, str)]
         self.messages.append({"role": "user", "content": docs + texts})
         try:
-            # Streaming keeps a long reply under the HTTP timeout. Automatic
-            # caching makes every later turn read the digest + PDFs from cache.
-            with self.client.messages.stream(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                system=self.system,
-                messages=self.messages,
-                cache_control={"type": "ephemeral"},
-            ) as stream:
-                response = stream.get_final_message()
+            response = self._stream_with_retry()
         except Exception:
             self.messages.pop()  # keep history valid if the caller retries
             raise
         # Full content, not just the text: thinking blocks must be sent back.
         self.messages.append({"role": "assistant", "content": response.content})
         return response
+
+    def _stream_with_retry(self):
+        # The SDK's max_retries only covers failures before the reply starts
+        # streaming; a connection dropped mid-stream surfaces as a raw
+        # transport error, so retry the whole turn here.
+        for attempt in range(STREAM_RETRIES + 1):
+            try:
+                # Streaming keeps a long reply under the HTTP timeout. Automatic
+                # caching makes every later turn read the digest + PDFs from cache.
+                with self.client.messages.stream(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=self.system,
+                    messages=self.messages,
+                    cache_control={"type": "ephemeral"},
+                ) as stream:
+                    return stream.get_final_message()
+            except (httpx2.TransportError, anthropic.APIConnectionError) as e:
+                if attempt == STREAM_RETRIES:
+                    raise
+                wait = 5 * 3 ** attempt
+                log(f"  [retry] connection dropped mid-reply ({e}) - retrying in {wait}s "
+                    f"({attempt + 1}/{STREAM_RETRIES})")
+                time.sleep(wait)
 
 
 def _text(response) -> str:

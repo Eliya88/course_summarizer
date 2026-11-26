@@ -78,3 +78,9 @@ def test_chat_keeps_history_and_puts_documents_first(tmp_path):
     assert doc["source"]["media_type"] == "application/pdf"
     assert [m["role"] for m in second] == ["user", "assistant", "user"]
     assert calls[2]["system"] == "sys" and calls[2]["max_tokens"] == 10
+
+
+def test_text_document_drops_bidi_controls_and_line_dashes(tmp_path):
+    t = tmp_path / "L1.txt"
+    t.write_text("\u202b- שלום\u202c\n  -מה נשמע\n-5 מעלות\nמודל - בינארי\n", encoding="utf-8")
+    assert claude_client.text_document(t)["source"]["data"] == "שלום\nמה נשמע\n-5 מעלות\nמודל - בינארי\n"
